@@ -19,6 +19,7 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
 2. Configure `.env` using `.env.example`.
 3. Apply SQL schema in Supabase SQL editor:
    - `supabase/schema.sql`
+   - `supabase/rls_policies.sql` (for publishable-key + authenticated JWT access)
 4. Run app:
    ```bash
    streamlit run streamlit_app.py
@@ -30,6 +31,8 @@ Use:
 - `SUPABASE_KEY=<publishable-or-service-key>`
 
 Do not use the Postgres connection string in `SUPABASE_URL`.
+
+If using publishable key, your app requests must include a signed-in user JWT and that user must exist in `public.tenant_memberships`.
 
 ## Verify env quickly
 ```bash
