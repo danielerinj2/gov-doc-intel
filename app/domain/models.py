@@ -25,6 +25,8 @@ class Document:
     confidence: float | None = None
     risk_score: float | None = None
     decision: str | None = None
+    template_id: str | None = None
+    expires_at: str | None = None
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
@@ -33,6 +35,7 @@ class Document:
 class DocumentEvent:
     document_id: str
     tenant_id: str
+    officer_id: str | None
     event_type: str
     payload: dict[str, Any]
     id: str = field(default_factory=lambda: str(uuid4()))
@@ -47,4 +50,26 @@ class Dispute:
     evidence_note: str
     status: str = "OPEN"
     id: str = field(default_factory=lambda: str(uuid4()))
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass
+class TenantPolicy:
+    tenant_id: str
+    data_retention_days: int = 365
+    api_rate_limit_per_minute: int = 120
+    max_documents_per_day: int = 25000
+    cross_tenant_fraud_enabled: bool = False
+    export_enabled: bool = True
+    residency_region: str = "default"
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+
+@dataclass
+class Officer:
+    officer_id: str
+    tenant_id: str
+    role: str
+    status: str = "ACTIVE"
     created_at: str = field(default_factory=utc_now)

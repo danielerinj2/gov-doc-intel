@@ -34,11 +34,21 @@ class PipelineNodes:
         tenant_id = ctx["tenant_id"]
         document_id = ctx["document_id"]
         dedup_hash = ctx["preprocessing_hashing"]["dedup_hash"]
-        prior_count = repo.count_by_hash(tenant_id, dedup_hash, exclude_document_id=document_id)
+        policy = ctx.get("tenant_policy") or repo.get_tenant_policy(tenant_id)
+        cross_tenant = bool(policy.get("cross_tenant_fraud_enabled", False))
+
+        if cross_tenant:
+            prior_count = repo.count_by_hash_global(dedup_hash, exclude_document_id=document_id)
+            scope = "GLOBAL"
+        else:
+            prior_count = repo.count_by_hash(tenant_id, dedup_hash, exclude_document_id=document_id)
+            scope = "TENANT"
+
         return {
             "dedup_hash": dedup_hash,
             "duplicate_count": prior_count,
             "suspected_duplicate": prior_count > 0,
+            "dedup_scope": scope,
         }
 
     def classification(self, ctx: dict[str, Any]) -> dict[str, Any]:
@@ -60,8 +70,16 @@ class PipelineNodes:
         return {"tamper_indicators": hits, "tamper_risk": risk}
 
     def template_map(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        dtype = str(ctx["classification"].get("document_type", "UNKNOWN")).lower()
-        return {"template_id": f"tpl_{dtype}"}
+        repo = ctx["repo"]
+        tenant_id = ctx["tenant_id"]
+        dtype = str(ctx["classification"].get("document_type", "UNKNOWN")).upper()
+        template = repo.get_active_template(tenant_id, dtype)
+        return {
+            "template_id": template.get("template_id", f"tpl_{dtype.lower()}"),
+            "template_version": template.get("version", 1),
+            "document_type": dtype,
+            "template_config": template.get("config", {}),
+        }
 
     def image_features(self, ctx: dict[str, Any]) -> dict[str, Any]:
         tamper_risk = ctx["tamper_forensics"]["tamper_risk"]
@@ -69,7 +87,7 @@ class PipelineNodes:
         return {"texture_consistency": round(max(0.0, 1 - tamper_risk), 3), "quality_score": quality}
 
     def field_extract(self, ctx: dict[str, Any]) -> dict[str, Any]:
-        dtype = ctx["classification"].get("document_type", "UNKNOWN")
+        dtype = ctx["template_map"]["document_type"]
         text = ctx["ocr_multi_script"]["ocr_text"]
         return self.groq.extract(text, str(dtype))
 
@@ -79,7 +97,14 @@ class PipelineNodes:
         image_quality = ctx["image_features"]["quality_score"]
         score = 0.2 + min(0.4, dup * 0.2) + (tamper_risk * 0.5) + (0.2 if image_quality < 0.35 else 0.0)
         score = round(min(score, 1.0), 3)
-        return {"fraud_score": score, "behavioral_flags": {"duplicate_count": dup, "low_quality": image_quality < 0.35}}
+        return {
+            "fraud_score": score,
+            "behavioral_flags": {
+                "duplicate_count": dup,
+                "low_quality": image_quality < 0.35,
+                "dedup_scope": ctx["dedup_cross_submission"]["dedup_scope"],
+            },
+        }
 
     def issuer_registry_verification(self, ctx: dict[str, Any]) -> dict[str, Any]:
         fields = ctx["field_extract"].get("fields", {})
@@ -90,16 +115,33 @@ class PipelineNodes:
         return {"registry_status": "UNVERIFIED", "registry_confidence": 0.3}
 
     def validation(self, ctx: dict[str, Any]) -> dict[str, Any]:
+        repo = ctx["repo"]
+        tenant_id = ctx["tenant_id"]
+        dtype = ctx["template_map"]["document_type"]
         extracted = ctx["field_extract"]
         missing = extracted.get("required_missing", []) or []
         extract_conf = float(extracted.get("confidence", 0.5))
         registry = ctx["issuer_registry_verification"]["registry_status"]
-        valid = len(missing) == 0 and extract_conf >= 0.6 and registry == "MATCHED"
+        rule = repo.get_active_rule(tenant_id, dtype)
+
+        min_extract_confidence = float(rule.get("min_extract_confidence", 0.6))
+        min_approval_confidence = float(rule.get("min_approval_confidence", 0.72))
+        max_approval_risk = float(rule.get("max_approval_risk", 0.35))
+        registry_required = bool(rule.get("registry_required", True))
+
+        registry_ok = registry == "MATCHED" if registry_required else True
+        valid = len(missing) == 0 and extract_conf >= min_extract_confidence and registry_ok
         return {
             "is_valid": valid,
             "missing_fields": missing,
             "extract_confidence": round(extract_conf, 3),
             "registry_status": registry,
+            "rule_name": rule.get("rule_name", f"rule_{dtype.lower()}"),
+            "rule_version": rule.get("version", 1),
+            "min_extract_confidence": min_extract_confidence,
+            "min_approval_confidence": min_approval_confidence,
+            "max_approval_risk": max_approval_risk,
+            "registry_required": registry_required,
         }
 
     def merge_node(self, ctx: dict[str, Any]) -> dict[str, Any]:
@@ -134,10 +176,12 @@ class PipelineNodes:
         risk = merged["risk_score"]
         confidence = merged["confidence"]
         valid = merged["validation"]["is_valid"]
+        min_approval_confidence = float(merged["validation"]["min_approval_confidence"])
+        max_approval_risk = float(merged["validation"]["max_approval_risk"])
 
         if risk >= 0.78:
             decision = "REJECT"
-        elif valid and confidence >= 0.72 and risk <= 0.35:
+        elif valid and confidence >= min_approval_confidence and risk <= max_approval_risk:
             decision = "APPROVE"
         else:
             decision = "REVIEW"
@@ -151,6 +195,8 @@ class PipelineNodes:
                 f"REGISTRY={merged['registry']['registry_status']}",
                 f"FRAUD={merged['fraud']['fraud_score']}",
                 f"TAMPER={merged['tamper']['tamper_risk']}",
+                f"RULE={merged['validation']['rule_name']}@v{merged['validation']['rule_version']}",
+                f"DEDUP_SCOPE={merged['fraud']['behavioral_flags']['dedup_scope']}",
             ],
         }
         return explanation

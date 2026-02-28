@@ -1,22 +1,56 @@
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from app.domain.models import Dispute, Document, DocumentEvent
+from app.domain.models import Dispute, Document, DocumentEvent, Officer, TenantPolicy
 from app.domain.states import DocumentState
 from app.infra.supabase_client import exec_query, get_supabase_client
+
+
+ROLE_CASE_WORKER = "case_worker"
+ROLE_REVIEWER = "reviewer"
+ROLE_ADMIN = "admin"
+ROLE_AUDITOR = "auditor"
+
+WRITER_ROLES = {ROLE_CASE_WORKER, ROLE_REVIEWER, ROLE_ADMIN}
+REVIEW_ROLES = {ROLE_REVIEWER, ROLE_ADMIN}
+ADMIN_ROLES = {ROLE_ADMIN}
 
 
 class MemoryStore:
     documents: dict[str, dict[str, Any]] = {}
     events: dict[str, list[dict[str, Any]]] = defaultdict(list)
     disputes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    officers: dict[str, dict[str, Any]] = {}
+    tenant_policies: dict[str, dict[str, Any]] = {}
+    tenant_templates: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    tenant_rules: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    tenant_api_keys: list[dict[str, Any]] = []
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _today_start_iso() -> str:
+    now = datetime.now(timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.isoformat()
+
+
+def _hash_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _normalize_role(role: str) -> str:
+    return role.strip().lower()
+
+
+def _sanitize_tenant_for_bucket(tenant_id: str) -> str:
+    return "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in tenant_id.lower())
 
 
 class Repository:
@@ -37,6 +71,48 @@ class Repository:
         result = exec_query(self.client.table("documents").select("id").limit(1))
         return result is not None
 
+    def _default_policy(self, tenant_id: str) -> dict[str, Any]:
+        policy = TenantPolicy(tenant_id=tenant_id)
+        return {
+            "tenant_id": policy.tenant_id,
+            "data_retention_days": policy.data_retention_days,
+            "api_rate_limit_per_minute": policy.api_rate_limit_per_minute,
+            "max_documents_per_day": policy.max_documents_per_day,
+            "cross_tenant_fraud_enabled": policy.cross_tenant_fraud_enabled,
+            "export_enabled": policy.export_enabled,
+            "residency_region": policy.residency_region,
+            "created_at": policy.created_at,
+            "updated_at": policy.updated_at,
+        }
+
+    def _default_template(self, tenant_id: str, document_type: str) -> dict[str, Any]:
+        dtype = (document_type or "UNKNOWN").upper()
+        return {
+            "tenant_id": tenant_id,
+            "document_type": dtype,
+            "template_id": f"tpl_{dtype.lower()}",
+            "version": 1,
+            "is_active": True,
+            "config": {},
+            "created_at": _now(),
+        }
+
+    def _default_rule(self, tenant_id: str, document_type: str) -> dict[str, Any]:
+        dtype = (document_type or "UNKNOWN").upper()
+        return {
+            "tenant_id": tenant_id,
+            "document_type": dtype,
+            "rule_name": f"rule_{dtype.lower()}",
+            "version": 1,
+            "is_active": True,
+            "min_extract_confidence": 0.6,
+            "min_approval_confidence": 0.72,
+            "max_approval_risk": 0.35,
+            "registry_required": True,
+            "config": {},
+            "created_at": _now(),
+        }
+
     def create_document(self, doc: Document) -> dict[str, Any]:
         row = {
             "id": doc.id,
@@ -50,13 +126,16 @@ class Repository:
             "confidence": doc.confidence,
             "risk_score": doc.risk_score,
             "decision": doc.decision,
+            "template_id": doc.template_id,
+            "expires_at": doc.expires_at,
             "created_at": doc.created_at,
             "updated_at": doc.updated_at,
         }
         if self.client:
-            result = exec_query(self.client.table("documents").insert(row))
-            if result and result.get("data"):
-                return result["data"][0]
+            exec_query(self.client.table("documents").insert(row))
+            remote = self.get_document(doc.id, tenant_id=doc.tenant_id)
+            if remote:
+                return remote
 
         MemoryStore.documents[doc.id] = row
         return row
@@ -67,11 +146,10 @@ class Repository:
             updates["state"] = updates["state"].value
 
         if self.client:
-            result = exec_query(self.client.table("documents").update(updates).eq("id", document_id))
-            if result and result.get("data"):
-                row = self.get_document(document_id)
-                if row:
-                    return row
+            exec_query(self.client.table("documents").update(updates).eq("id", document_id))
+            row = self.get_document(document_id)
+            if row:
+                return row
 
         row = MemoryStore.documents.get(document_id)
         if not row:
@@ -79,13 +157,22 @@ class Repository:
         row.update(updates)
         return row
 
-    def get_document(self, document_id: str) -> dict[str, Any] | None:
+    def get_document(self, document_id: str, tenant_id: str | None = None) -> dict[str, Any] | None:
         if self.client:
-            result = exec_query(self.client.table("documents").select("*").eq("id", document_id).limit(1))
+            query = self.client.table("documents").select("*").eq("id", document_id).limit(1)
+            if tenant_id:
+                query = query.eq("tenant_id", tenant_id)
+            result = exec_query(query)
             if result and result.get("data"):
                 rows = result["data"]
                 return rows[0] if rows else None
-        return MemoryStore.documents.get(document_id)
+
+        row = MemoryStore.documents.get(document_id)
+        if not row:
+            return None
+        if tenant_id and row.get("tenant_id") != tenant_id:
+            return None
+        return row
 
     def list_documents(self, tenant_id: str) -> list[dict[str, Any]]:
         if self.client:
@@ -98,8 +185,29 @@ class Repository:
             if result and result.get("data") is not None:
                 return result["data"]
 
-        rows = [r for r in MemoryStore.documents.values() if r["tenant_id"] == tenant_id]
+        rows = [r for r in MemoryStore.documents.values() if r.get("tenant_id") == tenant_id]
         return sorted(rows, key=lambda x: x["created_at"], reverse=True)
+
+    def count_documents_created_today(self, tenant_id: str) -> int:
+        start_iso = _today_start_iso()
+        if self.client:
+            result = exec_query(
+                self.client.table("documents")
+                .select("id", count="exact")
+                .eq("tenant_id", tenant_id)
+                .gte("created_at", start_iso)
+            )
+            if result is not None:
+                data = result.get("data") or []
+                return len(data)
+
+        count = 0
+        for row in MemoryStore.documents.values():
+            if row.get("tenant_id") != tenant_id:
+                continue
+            if str(row.get("created_at", "")) >= start_iso:
+                count += 1
+        return count
 
     def count_by_hash(self, tenant_id: str, dedup_hash: str, exclude_document_id: str | None = None) -> int:
         if self.client:
@@ -113,17 +221,35 @@ class Repository:
                 query = query.neq("id", exclude_document_id)
             result = exec_query(query)
             if result is not None:
-                # supabase-py returns count on response object but fallback via length if unavailable
                 data = result.get("data") or []
                 return len(data)
 
         count = 0
         for row in MemoryStore.documents.values():
-            if row["tenant_id"] != tenant_id:
+            if row.get("tenant_id") != tenant_id:
                 continue
             if row.get("dedup_hash") != dedup_hash:
                 continue
-            if exclude_document_id and row["id"] == exclude_document_id:
+            if exclude_document_id and row.get("id") == exclude_document_id:
+                continue
+            count += 1
+        return count
+
+    def count_by_hash_global(self, dedup_hash: str, exclude_document_id: str | None = None) -> int:
+        if self.client:
+            query = self.client.table("documents").select("id", count="exact").eq("dedup_hash", dedup_hash)
+            if exclude_document_id:
+                query = query.neq("id", exclude_document_id)
+            result = exec_query(query)
+            if result is not None:
+                data = result.get("data") or []
+                return len(data)
+
+        count = 0
+        for row in MemoryStore.documents.values():
+            if row.get("dedup_hash") != dedup_hash:
+                continue
+            if exclude_document_id and row.get("id") == exclude_document_id:
                 continue
             count += 1
         return count
@@ -133,29 +259,55 @@ class Repository:
             "id": event.id,
             "document_id": event.document_id,
             "tenant_id": event.tenant_id,
+            "officer_id": event.officer_id,
             "event_type": event.event_type,
             "payload": event.payload,
             "created_at": event.created_at,
         }
         if self.client:
-            result = exec_query(self.client.table("document_events").insert(row))
+            exec_query(self.client.table("document_events").insert(row))
+            result = exec_query(self.client.table("document_events").select("*").eq("id", event.id).limit(1))
             if result and result.get("data"):
-                return result["data"][0]
+                data = result["data"]
+                return data[0] if data else row
 
         MemoryStore.events[event.document_id].append(row)
         return row
 
-    def list_events(self, document_id: str) -> list[dict[str, Any]]:
+    def list_events(self, document_id: str, tenant_id: str | None = None) -> list[dict[str, Any]]:
         if self.client:
-            result = exec_query(
+            query = (
                 self.client.table("document_events")
                 .select("*")
                 .eq("document_id", document_id)
                 .order("created_at", desc=False)
             )
+            if tenant_id:
+                query = query.eq("tenant_id", tenant_id)
+            result = exec_query(query)
             if result and result.get("data") is not None:
                 return result["data"]
-        return MemoryStore.events.get(document_id, [])
+
+        rows = MemoryStore.events.get(document_id, [])
+        if tenant_id:
+            rows = [r for r in rows if r.get("tenant_id") == tenant_id]
+        return rows
+
+    def list_events_by_tenant(self, tenant_id: str) -> list[dict[str, Any]]:
+        if self.client:
+            result = exec_query(
+                self.client.table("document_events")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .order("created_at", desc=False)
+            )
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows: list[dict[str, Any]] = []
+        for doc_events in MemoryStore.events.values():
+            rows.extend([r for r in doc_events if r.get("tenant_id") == tenant_id])
+        return sorted(rows, key=lambda x: x["created_at"])
 
     def create_dispute(self, dispute: Dispute) -> dict[str, Any]:
         row = {
@@ -168,9 +320,11 @@ class Repository:
             "created_at": dispute.created_at,
         }
         if self.client:
-            result = exec_query(self.client.table("disputes").insert(row))
+            exec_query(self.client.table("disputes").insert(row))
+            result = exec_query(self.client.table("disputes").select("*").eq("id", dispute.id).limit(1))
             if result and result.get("data"):
-                return result["data"][0]
+                data = result["data"]
+                return data[0] if data else row
 
         MemoryStore.disputes[dispute.document_id].append(row)
         return row
@@ -188,5 +342,191 @@ class Repository:
 
         rows: list[dict[str, Any]] = []
         for items in MemoryStore.disputes.values():
-            rows.extend([it for it in items if it["tenant_id"] == tenant_id])
+            rows.extend([it for it in items if it.get("tenant_id") == tenant_id])
         return sorted(rows, key=lambda x: x["created_at"], reverse=True)
+
+    def export_documents_for_tenant(self, tenant_id: str, include_raw_text: bool = False) -> list[dict[str, Any]]:
+        docs = self.list_documents(tenant_id)
+        if include_raw_text:
+            return docs
+        redacted: list[dict[str, Any]] = []
+        for row in docs:
+            item = dict(row)
+            item.pop("raw_text", None)
+            redacted.append(item)
+        return redacted
+
+    def upsert_officer(self, officer: Officer) -> dict[str, Any]:
+        row = {
+            "officer_id": officer.officer_id,
+            "tenant_id": officer.tenant_id,
+            "role": _normalize_role(officer.role),
+            "status": officer.status,
+            "created_at": officer.created_at,
+        }
+
+        if self.client:
+            exec_query(self.client.table("officers").upsert(row, on_conflict="officer_id"))
+            result = exec_query(self.client.table("officers").select("*").eq("officer_id", officer.officer_id).limit(1))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.officers[officer.officer_id] = row
+        return row
+
+    def get_officer(self, officer_id: str) -> dict[str, Any] | None:
+        if self.client:
+            result = exec_query(self.client.table("officers").select("*").eq("officer_id", officer_id).limit(1))
+            if result and result.get("data"):
+                rows = result["data"]
+                return rows[0] if rows else None
+
+        return MemoryStore.officers.get(officer_id)
+
+    def assert_officer_access(self, officer_id: str, tenant_id: str, allowed_roles: set[str] | None = None) -> dict[str, Any]:
+        row = self.get_officer(officer_id)
+        if not row:
+            raise PermissionError("Officer not registered")
+
+        if row.get("status") != "ACTIVE":
+            raise PermissionError("Officer is not active")
+
+        if row.get("tenant_id") != tenant_id:
+            raise PermissionError("Officer is bound to a different tenant")
+
+        role = _normalize_role(str(row.get("role", "")))
+        if allowed_roles and role not in {_normalize_role(r) for r in allowed_roles}:
+            raise PermissionError("Officer role is not permitted for this action")
+
+        return row
+
+    def get_tenant_policy(self, tenant_id: str, create_if_missing: bool = True) -> dict[str, Any]:
+        if self.client:
+            result = exec_query(self.client.table("tenant_policies").select("*").eq("tenant_id", tenant_id).limit(1))
+            if result and result.get("data"):
+                rows = result["data"]
+                if rows:
+                    return rows[0]
+            if create_if_missing:
+                default = self._default_policy(tenant_id)
+                exec_query(self.client.table("tenant_policies").insert(default))
+                result2 = exec_query(self.client.table("tenant_policies").select("*").eq("tenant_id", tenant_id).limit(1))
+                if result2 and result2.get("data"):
+                    rows = result2["data"]
+                    if rows:
+                        return rows[0]
+
+        if tenant_id not in MemoryStore.tenant_policies and create_if_missing:
+            MemoryStore.tenant_policies[tenant_id] = self._default_policy(tenant_id)
+        return MemoryStore.tenant_policies.get(tenant_id, self._default_policy(tenant_id))
+
+    def get_active_template(self, tenant_id: str, document_type: str) -> dict[str, Any]:
+        dtype = (document_type or "UNKNOWN").upper()
+        if self.client:
+            result = exec_query(
+                self.client.table("tenant_templates")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("document_type", dtype)
+                .eq("is_active", True)
+                .order("version", desc=True)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                rows = result["data"]
+                if rows:
+                    return rows[0]
+
+        key = (tenant_id, dtype)
+        rows = MemoryStore.tenant_templates.get(key, [])
+        active = [r for r in rows if r.get("is_active")]
+        if active:
+            return sorted(active, key=lambda x: x.get("version", 1), reverse=True)[0]
+
+        return self._default_template(tenant_id, dtype)
+
+    def get_active_rule(self, tenant_id: str, document_type: str) -> dict[str, Any]:
+        dtype = (document_type or "UNKNOWN").upper()
+        if self.client:
+            result = exec_query(
+                self.client.table("tenant_rules")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("document_type", dtype)
+                .eq("is_active", True)
+                .order("version", desc=True)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                rows = result["data"]
+                if rows:
+                    return rows[0]
+
+        key = (tenant_id, dtype)
+        rows = MemoryStore.tenant_rules.get(key, [])
+        active = [r for r in rows if r.get("is_active")]
+        if active:
+            return sorted(active, key=lambda x: x.get("version", 1), reverse=True)[0]
+
+        return self._default_rule(tenant_id, dtype)
+
+    def get_tenant_bucket(self, tenant_id: str) -> str:
+        if self.client:
+            result = exec_query(
+                self.client.table("tenant_storage_buckets").select("bucket_name").eq("tenant_id", tenant_id).eq("is_active", True).limit(1)
+            )
+            if result and result.get("data"):
+                rows = result["data"]
+                if rows and rows[0].get("bucket_name"):
+                    return str(rows[0]["bucket_name"])
+
+        return f"tenant-{_sanitize_tenant_for_bucket(tenant_id)}"
+
+    def create_tenant_api_key(self, tenant_id: str, key_label: str, raw_key: str) -> dict[str, Any]:
+        row = {
+            "tenant_id": tenant_id,
+            "key_label": key_label,
+            "key_hash": _hash_key(raw_key),
+            "status": "ACTIVE",
+            "created_at": _now(),
+            "last_used_at": None,
+        }
+
+        if self.client:
+            result = exec_query(self.client.table("tenant_api_keys").insert(row))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.tenant_api_keys.append(row)
+        return row
+
+    def validate_tenant_api_key(self, tenant_id: str, raw_key: str) -> bool:
+        key_hash = _hash_key(raw_key)
+
+        if self.client:
+            result = exec_query(
+                self.client.table("tenant_api_keys")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("key_hash", key_hash)
+                .eq("status", "ACTIVE")
+                .limit(1)
+            )
+            if result and result.get("data"):
+                rows = result["data"]
+                if rows:
+                    exec_query(
+                        self.client.table("tenant_api_keys")
+                        .update({"last_used_at": _now()})
+                        .eq("tenant_id", tenant_id)
+                        .eq("key_hash", key_hash)
+                    )
+                    return True
+
+        for row in MemoryStore.tenant_api_keys:
+            if row.get("tenant_id") == tenant_id and row.get("key_hash") == key_hash and row.get("status") == "ACTIVE":
+                row["last_used_at"] = _now()
+                return True
+        return False

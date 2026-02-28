@@ -5,7 +5,9 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
 ## Architecture implemented
 - DAG pipeline with parallel branches and merge/decision nodes
 - Document state machine + event trail
-- Tenant-scoped document processing
+- Logical multi-tenancy with department-scoped isolation
+- Officer-bound tenant authorization (one officer -> one tenant)
+- Tenant-scoped templates, rules, fraud scope, logs, and exports
 - Review/reject/dispute workflow
 - Supabase persistence with in-memory fallback
 
@@ -36,6 +38,19 @@ Default Groq model is `llama-3.3-70b-versatile` (override with `GROQ_MODEL`).
 Cloudflare-sensitive runtimes can set `GROQ_USER_AGENT` (already used in SDK calls).
 
 If using publishable key, your app requests must include a signed-in user JWT and that user must exist in `public.tenant_memberships`.
+
+## Multi-Tenancy Guarantees
+- Templates and rules are tenant-scoped (`tenant_templates`, `tenant_rules`).
+- Fraud dedup scope is tenant-only by default and can be enabled cross-tenant via `tenant_policies.cross_tenant_fraud_enabled`.
+- Officers are bound to a single tenant (`officers` table + service authorization checks).
+- Audit logs are tenant-filtered (`document_events.tenant_id` + filtered queries/RLS).
+- Batch export is tenant-only and policy-gated (`tenant_policies.export_enabled`).
+- Tenant storage bucket mapping is isolated (`tenant_storage_buckets` + storage RLS).
+
+## First Run in UI
+1. Use sidebar to set `Tenant ID` and `Officer ID`.
+2. Click `Register / Bind Officer` once.
+3. Then ingest/process documents.
 
 ## Verify env quickly
 ```bash
