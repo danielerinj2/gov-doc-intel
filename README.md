@@ -24,6 +24,7 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
 3. Apply SQL schema in Supabase SQL editor:
    - `supabase/schema.sql`
    - `supabase/rls_policies.sql` (for publishable-key + authenticated JWT access)
+   - If your DB was created earlier, run `supabase/part2_contracts_patch.sql` once
 4. Run app:
    ```bash
    streamlit run streamlit_app.py
@@ -139,6 +140,10 @@ Unified records are persisted per `document_id + job_id` in `document_records.re
 ```bash
 python3 scripts/check_setup.py
 ```
+
+If app status shows `PART2_SCHEMA_READY=false`, apply:
+- `supabase/part2_contracts_patch.sql`
+- then rerun `supabase/rls_policies.sql`
 
 ## Debug Groq
 ```bash

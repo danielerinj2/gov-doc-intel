@@ -25,6 +25,8 @@ with st.expander("Environment status", expanded=False):
             "SUPABASE_KEY_PRESENT": settings.supabase_key_present(),
             "GROQ_CONFIGURED": bool(settings.groq_api_key),
             "PERSISTENCE": "Supabase" if service.repo.using_supabase else f"In-memory fallback ({service.repo.error})",
+            "PART2_SCHEMA_READY": service.repo.part2_schema_ready,
+            "PART2_SCHEMA_GAPS": service.repo.schema_gaps[:8],
             "DR_PLAN": service.dr_service.describe(),
         }
     )

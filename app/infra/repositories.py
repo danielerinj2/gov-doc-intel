@@ -58,10 +58,21 @@ def _sanitize_tenant_for_bucket(tenant_id: str) -> str:
 class Repository:
     def __init__(self) -> None:
         self.client, self.error = get_supabase_client()
+        self.schema_gaps: list[str] = []
+        self.part2_schema_ready: bool = False
         if self.client and not self._probe_documents_access():
             self.client = None
             if not self.error:
                 self.error = "Supabase connected but documents table access failed (check schema/RLS/key)"
+        if self.client:
+            self.schema_gaps = self._detect_part2_schema_gaps()
+            self.part2_schema_ready = len(self.schema_gaps) == 0
+            if self.schema_gaps:
+                gap_preview = ", ".join(self.schema_gaps[:4])
+                self.error = (
+                    "Supabase schema is outdated for Part-2 contracts. "
+                    f"Missing/incompatible: {gap_preview}"
+                )
 
     @property
     def using_supabase(self) -> bool:
@@ -72,6 +83,40 @@ class Repository:
             return False
         result = exec_query(self.client.table("documents").select("id").limit(1))
         return result is not None
+
+    def _detect_part2_schema_gaps(self) -> list[str]:
+        if not self.client:
+            return []
+
+        gaps: list[str] = []
+        required_tables = [
+            "citizen_notifications",
+            "review_escalations",
+            "document_records",
+        ]
+        for table in required_tables:
+            result = exec_query(self.client.table(table).select("*").limit(1))
+            if result is None:
+                gaps.append(f"table:{table}")
+
+        # Check new document_events columns used by formal audit contracts.
+        result_cols = exec_query(
+            self.client.table("document_events")
+            .select("actor_type,actor_id,reason,policy_version,model_versions,correlation_id,causation_id")
+            .limit(1)
+        )
+        if result_cols is None:
+            gaps.append("columns:document_events.actor_*_reason_policy_model_corr")
+
+        result_docs_cols = exec_query(
+            self.client.table("documents")
+            .select("last_job_id,offline_processed,offline_sync_status,provisional_decision,queue_overflow")
+            .limit(1)
+        )
+        if result_docs_cols is None:
+            gaps.append("columns:documents.part2_offline_job_fields")
+
+        return gaps
 
     def _default_policy(self, tenant_id: str) -> dict[str, Any]:
         policy = TenantPolicy(tenant_id=tenant_id)
