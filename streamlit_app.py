@@ -6,13 +6,27 @@ import pandas as pd
 import streamlit as st
 
 from app.config import settings
-from app.infra.repositories import ROLE_ADMIN, ROLE_AUDITOR, ROLE_CASE_WORKER, ROLE_REVIEWER
+from app.infra.repositories import (
+    ROLE_CASE_WORKER,
+    ROLE_REVIEWER,
+    ROLE_ADMIN,
+    ROLE_AUDITOR,
+    ROLE_TENANT_OPERATOR,
+    ROLE_TENANT_OFFICER,
+    ROLE_TENANT_SENIOR_OFFICER,
+    ROLE_TENANT_ADMIN,
+    ROLE_TENANT_AUDITOR,
+    ROLE_PLATFORM_AUDITOR,
+    ROLE_PLATFORM_SUPER_ADMIN,
+)
 from app.services.document_service import DocumentService
+from app.services.governance_service import GovernanceService
 
 
 st.set_page_config(page_title="Gov Document Intelligence", page_icon="📄", layout="wide")
 
 service = DocumentService()
+governance = GovernanceService(service.repo)
 
 st.title("Government Document Intelligence")
 st.caption("Formal state machine + event-driven pipeline + tenant-scoped governance")
@@ -29,6 +43,8 @@ with st.expander("Environment status", expanded=False):
             "PART2_SCHEMA_GAPS": service.repo.schema_gaps[:8],
             "PART3_SCHEMA_READY": service.repo.part3_schema_ready,
             "PART3_SCHEMA_GAPS": service.repo.part3_schema_gaps[:8],
+            "PART4_SCHEMA_READY": service.repo.part4_schema_ready,
+            "PART4_SCHEMA_GAPS": service.repo.part4_schema_gaps[:8],
             "DR_PLAN": service.dr_service.describe(),
         }
     )
@@ -37,7 +53,21 @@ with st.sidebar:
     st.header("Access Context")
     tenant_id = st.text_input("Tenant ID", value="dept-education")
     officer_id = st.text_input("Officer ID", value="officer-001")
-    role = st.selectbox("Officer Role", [ROLE_CASE_WORKER, ROLE_REVIEWER, ROLE_ADMIN, ROLE_AUDITOR], index=0)
+    role = st.selectbox(
+        "Officer Role",
+        [
+            ROLE_TENANT_OPERATOR,
+            ROLE_TENANT_OFFICER,
+            ROLE_TENANT_SENIOR_OFFICER,
+            ROLE_TENANT_ADMIN,
+            ROLE_TENANT_AUDITOR,
+            ROLE_CASE_WORKER,
+            ROLE_REVIEWER,
+            ROLE_ADMIN,
+            ROLE_AUDITOR,
+        ],
+        index=0,
+    )
 
     if st.button("Register / Bind Officer", use_container_width=True):
         try:
@@ -363,6 +393,123 @@ try:
     st.json(dashboard)
 except Exception as exc:
     st.error(str(exc))
+
+st.divider()
+st.subheader("Governance + Tenancy Layer")
+g1, g2 = st.columns(2)
+with g1:
+    try:
+        snapshot = governance.get_tenant_governance_snapshot(tenant_id.strip(), officer_id.strip())
+        st.json(snapshot)
+    except Exception as exc:
+        st.error(str(exc))
+
+    st.markdown("### Update Data Governance Policy")
+    raw_years = st.number_input("Raw image retention (years)", min_value=1, max_value=30, value=7, step=1)
+    structured_years = st.number_input("Structured data retention (years)", min_value=1, max_value=30, value=10, step=1)
+    fraud_years = st.number_input("Fraud logs retention (years)", min_value=1, max_value=30, value=10, step=1)
+    purge_policy = st.selectbox("Purge policy", ["ANONYMIZE_AFTER_EXPIRY", "HARD_DELETE_AFTER_EXPIRY"], index=0)
+    if st.button("Save Governance Policy", use_container_width=True):
+        try:
+            row = governance.update_tenant_data_policy(
+                tenant_id.strip(),
+                officer_id.strip(),
+                {
+                    "raw_image_retention_years": int(raw_years),
+                    "structured_data_retention_years": int(structured_years),
+                    "fraud_logs_retention_years": int(fraud_years),
+                    "purge_policy": purge_policy,
+                },
+            )
+            st.success(f"Saved policy for {row['tenant_id']}")
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.markdown("### Update Partition Config")
+    partition_mode = st.selectbox(
+        "Partition mode",
+        ["LOGICAL_SHARED", "DEDICATED_SCHEMA", "DEDICATED_CLUSTER", "DEDICATED_DEPLOYMENT"],
+        index=0,
+    )
+    residency_region = st.text_input("Residency region", value="default")
+    region_cluster = st.text_input("Region cluster", value="region-a")
+    physical_iso = st.checkbox("Physical isolation required", value=False)
+    if st.button("Save Partition Config", use_container_width=True):
+        try:
+            row = governance.update_tenant_partition_config(
+                tenant_id.strip(),
+                officer_id.strip(),
+                {
+                    "partition_mode": partition_mode,
+                    "residency_region": residency_region.strip() or "default",
+                    "region_cluster": region_cluster.strip() or "region-a",
+                    "physical_isolation_required": bool(physical_iso),
+                },
+            )
+            st.success(f"Saved partition config: {row['partition_mode']}")
+        except Exception as exc:
+            st.error(str(exc))
+
+with g2:
+    st.markdown("### Runbook Management")
+    rb_event = st.text_input("Runbook event type", value="PIPELINE_FAILURE")
+    rb_severity = st.selectbox("Runbook severity", ["SEV1", "SEV2", "SEV3"], index=1)
+    rb_title = st.text_input("Runbook title", value="OCR cluster degraded")
+    rb_steps = st.text_area("Runbook steps (one per line)", value="Check OCR health endpoint\nShift traffic to standby pool\nNotify tenant admins")
+    if st.button("Create Runbook", use_container_width=True):
+        try:
+            row = governance.create_runbook(
+                tenant_id=tenant_id.strip(),
+                officer_id=officer_id.strip(),
+                event_type=rb_event.strip(),
+                severity=rb_severity,
+                title=rb_title.strip(),
+                steps=[s.strip() for s in rb_steps.splitlines() if s.strip()],
+                owner_role=ROLE_TENANT_ADMIN,
+            )
+            st.success(f"Runbook created: {row['id']}")
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.markdown("### Governance Audit Review")
+    review_type = st.selectbox("Review type", ["INTERNAL_AUDIT", "EXTERNAL_AUDIT", "FAIRNESS_REVIEW"], index=0)
+    review_status = st.selectbox("Review status", ["OPEN", "CLOSED", "ACTION_REQUIRED"], index=0)
+    findings_raw = st.text_area("Findings (one per line)", value="No cross-tenant data leak observed")
+    if st.button("Log Audit Review", use_container_width=True):
+        try:
+            row = governance.log_audit_review(
+                tenant_id=tenant_id.strip(),
+                officer_id=officer_id.strip(),
+                review_type=review_type,
+                status=review_status,
+                findings=[s.strip() for s in findings_raw.splitlines() if s.strip()],
+            )
+            st.success(f"Audit review logged: {row['id']}")
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.markdown("### Platform Oversight Access")
+    platform_actor = st.text_input("Platform actor ID", value="platform-auditor-001")
+    platform_role = st.selectbox("Platform role", [ROLE_PLATFORM_AUDITOR, ROLE_PLATFORM_SUPER_ADMIN], index=0)
+    platform_justification = st.text_area("Justification", value="National ombudsman cross-tenant oversight")
+    if st.button("Grant Platform Access", use_container_width=True):
+        try:
+            row = governance.grant_platform_access(
+                actor_id=platform_actor.strip(),
+                platform_role=platform_role,
+                justification=platform_justification.strip(),
+                approved_by_actor_id=officer_id.strip(),
+            )
+            st.success(f"Platform access granted: {row['platform_role']}")
+        except Exception as exc:
+            st.error(str(exc))
+
+    if st.button("Load Cross-Tenant Overview", use_container_width=True):
+        try:
+            overview = governance.cross_tenant_audit_overview(platform_actor.strip())
+            st.json(overview)
+        except Exception as exc:
+            st.error(str(exc))
 
 with st.expander("Tenant Audit Timeline", expanded=False):
     try:

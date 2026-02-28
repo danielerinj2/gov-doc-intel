@@ -16,9 +16,43 @@ ROLE_REVIEWER = "reviewer"
 ROLE_ADMIN = "admin"
 ROLE_AUDITOR = "auditor"
 
-WRITER_ROLES = {ROLE_CASE_WORKER, ROLE_REVIEWER, ROLE_ADMIN}
-REVIEW_ROLES = {ROLE_REVIEWER, ROLE_ADMIN}
-ADMIN_ROLES = {ROLE_ADMIN}
+ROLE_TENANT_OPERATOR = "tenant_operator"
+ROLE_TENANT_OFFICER = "tenant_officer"
+ROLE_TENANT_SENIOR_OFFICER = "tenant_senior_officer"
+ROLE_TENANT_ADMIN = "tenant_admin"
+ROLE_TENANT_AUDITOR = "tenant_auditor"
+ROLE_PLATFORM_SUPER_ADMIN = "platform_super_admin"
+ROLE_PLATFORM_AUDITOR = "platform_auditor"
+
+TENANT_ROLE_ALIASES = {
+    ROLE_CASE_WORKER: ROLE_TENANT_OPERATOR,
+    ROLE_REVIEWER: ROLE_TENANT_OFFICER,
+    ROLE_ADMIN: ROLE_TENANT_ADMIN,
+    ROLE_AUDITOR: ROLE_TENANT_AUDITOR,
+    ROLE_TENANT_OPERATOR: ROLE_TENANT_OPERATOR,
+    ROLE_TENANT_OFFICER: ROLE_TENANT_OFFICER,
+    ROLE_TENANT_SENIOR_OFFICER: ROLE_TENANT_SENIOR_OFFICER,
+    ROLE_TENANT_ADMIN: ROLE_TENANT_ADMIN,
+    ROLE_TENANT_AUDITOR: ROLE_TENANT_AUDITOR,
+}
+
+TENANT_WRITER_ROLES = {
+    ROLE_TENANT_OPERATOR,
+    ROLE_TENANT_OFFICER,
+    ROLE_TENANT_SENIOR_OFFICER,
+    ROLE_TENANT_ADMIN,
+}
+TENANT_REVIEW_ROLES = {
+    ROLE_TENANT_OFFICER,
+    ROLE_TENANT_SENIOR_OFFICER,
+    ROLE_TENANT_ADMIN,
+}
+TENANT_ADMIN_ROLES = {ROLE_TENANT_ADMIN}
+PLATFORM_ROLES = {ROLE_PLATFORM_SUPER_ADMIN, ROLE_PLATFORM_AUDITOR}
+
+WRITER_ROLES = set(TENANT_WRITER_ROLES) | {ROLE_CASE_WORKER, ROLE_REVIEWER, ROLE_ADMIN}
+REVIEW_ROLES = set(TENANT_REVIEW_ROLES) | {ROLE_REVIEWER, ROLE_ADMIN}
+ADMIN_ROLES = set(TENANT_ADMIN_ROLES) | {ROLE_ADMIN}
 
 
 class MemoryStore:
@@ -39,6 +73,11 @@ class MemoryStore:
     webhook_outbox: list[dict[str, Any]] = []
     correction_events: list[dict[str, Any]] = []
     correction_gate_records: list[dict[str, Any]] = []
+    tenant_data_policies: dict[str, dict[str, Any]] = {}
+    tenant_partition_configs: dict[str, dict[str, Any]] = {}
+    operational_runbooks: list[dict[str, Any]] = []
+    governance_audit_reviews: list[dict[str, Any]] = []
+    platform_access_grants: dict[str, dict[str, Any]] = {}
 
 
 def _now() -> str:
@@ -55,7 +94,8 @@ def _hash_key(raw: str) -> str:
 
 
 def _normalize_role(role: str) -> str:
-    return role.strip().lower()
+    canonical = role.strip().lower()
+    return TENANT_ROLE_ALIASES.get(canonical, canonical)
 
 
 def _sanitize_tenant_for_bucket(tenant_id: str) -> str:
@@ -69,6 +109,8 @@ class Repository:
         self.part2_schema_ready: bool = False
         self.part3_schema_gaps: list[str] = []
         self.part3_schema_ready: bool = False
+        self.part4_schema_gaps: list[str] = []
+        self.part4_schema_ready: bool = False
         if self.client and not self._probe_documents_access():
             self.client = None
             if not self.error:
@@ -78,6 +120,8 @@ class Repository:
             self.part2_schema_ready = len(self.schema_gaps) == 0
             self.part3_schema_gaps = self._detect_part3_schema_gaps()
             self.part3_schema_ready = len(self.part3_schema_gaps) == 0
+            self.part4_schema_gaps = self._detect_part4_schema_gaps()
+            self.part4_schema_ready = len(self.part4_schema_gaps) == 0
             if self.schema_gaps:
                 gap_preview = ", ".join(self.schema_gaps[:4])
                 self.error = (
@@ -88,6 +132,12 @@ class Repository:
                 gap_preview = ", ".join(self.part3_schema_gaps[:4])
                 self.error = (
                     "Supabase schema is missing Part-3 operational tables. "
+                    f"Missing/incompatible: {gap_preview}"
+                )
+            elif self.part4_schema_gaps:
+                gap_preview = ", ".join(self.part4_schema_gaps[:4])
+                self.error = (
+                    "Supabase schema is missing Part-4 governance tables. "
                     f"Missing/incompatible: {gap_preview}"
                 )
 
@@ -154,6 +204,24 @@ class Repository:
                 gaps.append(f"table:{table}")
         return gaps
 
+    def _detect_part4_schema_gaps(self) -> list[str]:
+        if not self.client:
+            return []
+
+        gaps: list[str] = []
+        required_tables = [
+            "tenant_data_policies",
+            "tenant_partition_configs",
+            "operational_runbooks",
+            "governance_audit_reviews",
+            "platform_access_grants",
+        ]
+        for table in required_tables:
+            result = exec_query(self.client.table(table).select("*").limit(1))
+            if result is None:
+                gaps.append(f"table:{table}")
+        return gaps
+
     def _default_policy(self, tenant_id: str) -> dict[str, Any]:
         policy = TenantPolicy(tenant_id=tenant_id)
         return {
@@ -202,6 +270,30 @@ class Repository:
             "registry_required": True,
             "config": {},
             "created_at": _now(),
+        }
+
+    def _default_data_policy(self, tenant_id: str) -> dict[str, Any]:
+        return {
+            "tenant_id": tenant_id,
+            "raw_image_retention_years": 7,
+            "structured_data_retention_years": 10,
+            "fraud_logs_retention_years": 10,
+            "archival_strategy": "COLD_STORAGE_AFTER_RETENTION_WINDOW",
+            "purge_policy": "ANONYMIZE_AFTER_EXPIRY",
+            "training_data_policy": "PSEUDONYMIZED_AND_GATED",
+            "legal_basis": "SERVICE_DELIVERY_FRAUD_PREVENTION_AUDIT",
+            "updated_at": _now(),
+        }
+
+    def _default_partition_config(self, tenant_id: str) -> dict[str, Any]:
+        return {
+            "tenant_id": tenant_id,
+            "partition_mode": "LOGICAL_SHARED",
+            "residency_region": "default",
+            "region_cluster": "region-a",
+            "physical_isolation_required": False,
+            "sensitivity_tier": "STANDARD",
+            "updated_at": _now(),
         }
 
     def create_document(self, doc: Document) -> dict[str, Any]:
@@ -278,6 +370,22 @@ class Repository:
 
         rows = [r for r in MemoryStore.documents.values() if r.get("tenant_id") == tenant_id]
         return sorted(rows, key=lambda x: x["created_at"], reverse=True)
+
+    def list_platform_tenants(self) -> list[dict[str, Any]]:
+        if self.client:
+            result = exec_query(self.client.table("tenants").select("*").order("tenant_id", desc=False))
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        tenant_ids = sorted({r.get("tenant_id") for r in MemoryStore.documents.values() if r.get("tenant_id")})
+        rows = [{"tenant_id": tid, "display_name": tid, "residency_region": "default"} for tid in tenant_ids]
+        if not rows:
+            # fallback from policies if documents are empty
+            rows = [
+                {"tenant_id": tid, "display_name": tid, "residency_region": p.get("residency_region", "default")}
+                for tid, p in MemoryStore.tenant_policies.items()
+            ]
+        return rows
 
     def list_documents_by_state(self, tenant_id: str, state: DocumentState) -> list[dict[str, Any]]:
         if self.client:
@@ -796,7 +904,8 @@ class Repository:
         officers = [
             row
             for row in self.list_officers(tenant_id)
-            if str(row.get("status", "ACTIVE")) == "ACTIVE" and str(row.get("role", "")) in {ROLE_REVIEWER, ROLE_ADMIN}
+            if str(row.get("status", "ACTIVE")) == "ACTIVE"
+            and _normalize_role(str(row.get("role", ""))) in TENANT_REVIEW_ROLES
         ]
         if not officers:
             return None
@@ -1040,6 +1149,225 @@ class Repository:
         if tenant_id not in MemoryStore.tenant_policies and create_if_missing:
             MemoryStore.tenant_policies[tenant_id] = self._default_policy(tenant_id)
         return MemoryStore.tenant_policies.get(tenant_id, self._default_policy(tenant_id))
+
+    def get_tenant_data_policy(self, tenant_id: str, create_if_missing: bool = True) -> dict[str, Any]:
+        if self.client:
+            result = exec_query(self.client.table("tenant_data_policies").select("*").eq("tenant_id", tenant_id).limit(1))
+            if result and result.get("data"):
+                rows = result["data"]
+                if rows:
+                    return rows[0]
+
+            if create_if_missing:
+                default = self._default_data_policy(tenant_id)
+                exec_query(self.client.table("tenant_data_policies").upsert(default, on_conflict="tenant_id"))
+                result2 = exec_query(self.client.table("tenant_data_policies").select("*").eq("tenant_id", tenant_id).limit(1))
+                if result2 and result2.get("data"):
+                    rows = result2["data"]
+                    if rows:
+                        return rows[0]
+
+        if tenant_id not in MemoryStore.tenant_data_policies and create_if_missing:
+            MemoryStore.tenant_data_policies[tenant_id] = self._default_data_policy(tenant_id)
+        return MemoryStore.tenant_data_policies.get(tenant_id, self._default_data_policy(tenant_id))
+
+    def upsert_tenant_data_policy(self, tenant_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        row = dict(self.get_tenant_data_policy(tenant_id, create_if_missing=True))
+        row.update(updates)
+        row["tenant_id"] = tenant_id
+        row["updated_at"] = _now()
+
+        if self.client:
+            exec_query(self.client.table("tenant_data_policies").upsert(row, on_conflict="tenant_id"))
+            result = exec_query(self.client.table("tenant_data_policies").select("*").eq("tenant_id", tenant_id).limit(1))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.tenant_data_policies[tenant_id] = row
+        return row
+
+    def get_tenant_partition_config(self, tenant_id: str, create_if_missing: bool = True) -> dict[str, Any]:
+        if self.client:
+            result = exec_query(self.client.table("tenant_partition_configs").select("*").eq("tenant_id", tenant_id).limit(1))
+            if result and result.get("data"):
+                rows = result["data"]
+                if rows:
+                    return rows[0]
+
+            if create_if_missing:
+                default = self._default_partition_config(tenant_id)
+                exec_query(self.client.table("tenant_partition_configs").upsert(default, on_conflict="tenant_id"))
+                result2 = exec_query(self.client.table("tenant_partition_configs").select("*").eq("tenant_id", tenant_id).limit(1))
+                if result2 and result2.get("data"):
+                    rows = result2["data"]
+                    if rows:
+                        return rows[0]
+
+        if tenant_id not in MemoryStore.tenant_partition_configs and create_if_missing:
+            MemoryStore.tenant_partition_configs[tenant_id] = self._default_partition_config(tenant_id)
+        return MemoryStore.tenant_partition_configs.get(tenant_id, self._default_partition_config(tenant_id))
+
+    def upsert_tenant_partition_config(self, tenant_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        row = dict(self.get_tenant_partition_config(tenant_id, create_if_missing=True))
+        row.update(updates)
+        row["tenant_id"] = tenant_id
+        row["updated_at"] = _now()
+
+        if self.client:
+            exec_query(self.client.table("tenant_partition_configs").upsert(row, on_conflict="tenant_id"))
+            result = exec_query(self.client.table("tenant_partition_configs").select("*").eq("tenant_id", tenant_id).limit(1))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.tenant_partition_configs[tenant_id] = row
+        return row
+
+    def create_runbook(
+        self,
+        *,
+        tenant_id: str,
+        event_type: str,
+        severity: str,
+        title: str,
+        steps: list[str],
+        owner_role: str,
+    ) -> dict[str, Any]:
+        row = {
+            "id": str(uuid4()),
+            "tenant_id": tenant_id,
+            "event_type": event_type,
+            "severity": severity,
+            "title": title,
+            "steps": steps,
+            "owner_role": owner_role,
+            "is_active": True,
+            "updated_at": _now(),
+            "created_at": _now(),
+        }
+        if self.client:
+            result = exec_query(self.client.table("operational_runbooks").insert(row))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.operational_runbooks.append(row)
+        return row
+
+    def list_runbooks(self, tenant_id: str, only_active: bool = True) -> list[dict[str, Any]]:
+        if self.client:
+            query = self.client.table("operational_runbooks").select("*").eq("tenant_id", tenant_id).order("created_at", desc=False)
+            if only_active:
+                query = query.eq("is_active", True)
+            result = exec_query(query)
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.operational_runbooks if r.get("tenant_id") == tenant_id]
+        if only_active:
+            rows = [r for r in rows if bool(r.get("is_active", True))]
+        return rows
+
+    def create_governance_audit_review(
+        self,
+        *,
+        tenant_id: str,
+        review_type: str,
+        status: str,
+        findings: list[str],
+        reviewed_by: str,
+    ) -> dict[str, Any]:
+        row = {
+            "id": str(uuid4()),
+            "tenant_id": tenant_id,
+            "review_type": review_type,
+            "status": status,
+            "findings": findings,
+            "reviewed_by": reviewed_by,
+            "created_at": _now(),
+        }
+        if self.client:
+            result = exec_query(self.client.table("governance_audit_reviews").insert(row))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.governance_audit_reviews.append(row)
+        return row
+
+    def list_governance_audit_reviews(self, tenant_id: str) -> list[dict[str, Any]]:
+        if self.client:
+            result = exec_query(
+                self.client.table("governance_audit_reviews")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .order("created_at", desc=True)
+            )
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.governance_audit_reviews if r.get("tenant_id") == tenant_id]
+        return sorted(rows, key=lambda x: x.get("created_at", ""), reverse=True)
+
+    def upsert_platform_access_grant(
+        self,
+        *,
+        actor_id: str,
+        platform_role: str,
+        justification: str,
+        approved_by: str,
+        status: str = "ACTIVE",
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "actor_id": actor_id,
+            "platform_role": platform_role,
+            "justification": justification,
+            "approved_by": approved_by,
+            "status": status,
+            "granted_at": _now(),
+            "expires_at": expires_at,
+        }
+        if self.client:
+            exec_query(self.client.table("platform_access_grants").upsert(row, on_conflict="actor_id,platform_role"))
+            result = exec_query(
+                self.client.table("platform_access_grants")
+                .select("*")
+                .eq("actor_id", actor_id)
+                .eq("platform_role", platform_role)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.platform_access_grants[f"{actor_id}:{platform_role}"] = row
+        return row
+
+    def list_platform_access_grants(self, actor_id: str | None = None) -> list[dict[str, Any]]:
+        if self.client:
+            query = self.client.table("platform_access_grants").select("*").order("granted_at", desc=True)
+            if actor_id:
+                query = query.eq("actor_id", actor_id)
+            result = exec_query(query)
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = list(MemoryStore.platform_access_grants.values())
+        if actor_id:
+            rows = [r for r in rows if r.get("actor_id") == actor_id]
+        return rows
+
+    def has_platform_access(self, actor_id: str, allowed_roles: set[str]) -> bool:
+        grants = self.list_platform_access_grants(actor_id=actor_id)
+        allowed = {r.lower() for r in allowed_roles}
+        for row in grants:
+            if str(row.get("status", "ACTIVE")).upper() != "ACTIVE":
+                continue
+            if str(row.get("platform_role", "")).lower() in allowed:
+                return True
+        return False
 
     def get_active_template(self, tenant_id: str, document_type: str) -> dict[str, Any]:
         dtype = (document_type or "UNKNOWN").upper()

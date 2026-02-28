@@ -13,6 +13,7 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
 - Unified versioned `document_record` persistence contract
 - Level-2 module boundaries across OCR, classification, template/rules, extraction, validation, authenticity, fraud, issuer verification, explainability/audit, human review workload, output integration, offline sync, and monitoring/MLOps
 - AI audit logs, module metrics, webhook outbox, human review assignment queue, and correction validation gate
+- Governance/Ops/Tenancy layer with tenant data policies, partition config, platform oversight grants, operational runbooks, and governance audit reviews
 - Supabase persistence with in-memory fallback
 
 ## Setup
@@ -28,6 +29,7 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
    - `supabase/rls_policies.sql` (for publishable-key + authenticated JWT access)
    - If your DB was created earlier, run `supabase/part2_contracts_patch.sql` once
    - If your DB predates Part-3 module tables, run `supabase/part3_operational_patch.sql` once
+   - If your DB predates Part-4 governance tables, run `supabase/part4_governance_patch.sql` once
 4. Run app:
    ```bash
    streamlit run streamlit_app.py
@@ -118,6 +120,15 @@ Implemented tenant-scoped operational persistence:
 - `webhook_outbox` (integration fan-out)
 - `correction_events` + `correction_validation_gate` (correction validation gate)
 
+## Part-4 Governance Tables
+- `tenant_data_policies` (retention/archival/purge/training governance per tenant)
+- `tenant_partition_configs` (logical vs physical partitioning and residency controls)
+- `platform_access_grants` (explicitly justified cross-tenant access grants)
+- `operational_runbooks` (incident and operations playbooks per tenant)
+- `governance_audit_reviews` (oversight findings and review evidence)
+
+Detailed governance notes: `docs/PART4_GOVERNANCE.md`.
+
 ## Part-2 Data Contracts
 Strict Pydantic schemas are implemented in:
 - `app/contracts/schemas.py`
@@ -163,6 +174,10 @@ If app status shows `PART2_SCHEMA_READY=false`, apply:
 
 If app status shows `PART3_SCHEMA_READY=false`, apply:
 - `supabase/part3_operational_patch.sql`
+- then rerun `supabase/rls_policies.sql`
+
+If app status shows `PART4_SCHEMA_READY=false`, apply:
+- `supabase/part4_governance_patch.sql`
 - then rerun `supabase/rls_policies.sql`
 
 ## Debug Groq
