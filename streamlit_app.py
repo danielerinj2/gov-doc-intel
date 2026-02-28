@@ -45,6 +45,8 @@ with st.expander("Environment status", expanded=False):
             "PART3_SCHEMA_GAPS": service.repo.part3_schema_gaps[:8],
             "PART4_SCHEMA_READY": service.repo.part4_schema_ready,
             "PART4_SCHEMA_GAPS": service.repo.part4_schema_gaps[:8],
+            "PART5_SCHEMA_READY": service.repo.part5_schema_ready,
+            "PART5_SCHEMA_GAPS": service.repo.part5_schema_gaps[:8],
             "DR_PLAN": service.dr_service.describe(),
         }
     )
@@ -508,6 +510,89 @@ with g2:
         try:
             overview = governance.cross_tenant_audit_overview(platform_actor.strip())
             st.json(overview)
+        except Exception as exc:
+            st.error(str(exc))
+
+st.divider()
+st.subheader("Part 5 - KPI, Rollout, Risk Register")
+p1, p2 = st.columns(2)
+with p1:
+    if st.button("Seed Part 5 Baseline", use_container_width=True):
+        try:
+            res = governance.seed_part5_baseline(tenant_id.strip(), officer_id.strip())
+            st.success(f"Baseline seeded: {res}")
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.markdown("### KPI Dashboard")
+    try:
+        kpi_dash = governance.get_kpi_dashboard(tenant_id.strip(), officer_id.strip())
+        st.json(kpi_dash)
+    except Exception as exc:
+        st.error(str(exc))
+
+    st.markdown("### Record KPI Snapshot")
+    kpi_key = st.text_input("KPI key", value="tamper_detection_recall_pct")
+    kpi_value = st.number_input("Measured value", value=86.0, step=0.1)
+    kpi_source = st.selectbox("Snapshot source", ["MANUAL", "AUDIT", "MONITORING"], index=0)
+    kpi_notes = st.text_area("Snapshot notes", value="Validated on labelled set for current month")
+    if st.button("Save KPI Snapshot", use_container_width=True):
+        try:
+            row = governance.record_kpi_snapshot(
+                tenant_id=tenant_id.strip(),
+                officer_id=officer_id.strip(),
+                kpi_key=kpi_key.strip(),
+                measured_value=float(kpi_value),
+                source=kpi_source,
+                notes=kpi_notes.strip() or None,
+            )
+            st.success(f"KPI snapshot recorded: {row['id']}")
+        except Exception as exc:
+            st.error(str(exc))
+
+with p2:
+    st.markdown("### Rollout Plan")
+    try:
+        phases = governance.get_rollout_plan(tenant_id.strip(), officer_id.strip())
+        if phases:
+            st.dataframe(pd.DataFrame(phases), use_container_width=True, hide_index=True)
+        else:
+            st.info("No rollout phases yet.")
+    except Exception as exc:
+        st.error(str(exc))
+
+    st.markdown("### Risk Register")
+    try:
+        risks = governance.get_risk_register(tenant_id.strip(), officer_id.strip())
+        if risks:
+            st.dataframe(pd.DataFrame(risks), use_container_width=True, hide_index=True)
+        else:
+            st.info("No risks logged yet.")
+    except Exception as exc:
+        st.error(str(exc))
+
+    st.markdown("### Update Risk")
+    risk_code = st.text_input("Risk code", value="RISK_2_MARKER_FN")
+    risk_title = st.text_input("Risk title", value="Stamp/signature detection false negatives")
+    risk_mitigation = st.text_area("Mitigation", value="Conservative thresholds + human review escalation")
+    risk_owner = st.text_input("Owner team", value="Fraud Team")
+    risk_impact = st.selectbox("Impact", ["LOW", "MEDIUM", "HIGH", "CRITICAL"], index=2)
+    risk_likelihood = st.selectbox("Likelihood", ["LOW", "MEDIUM", "HIGH"], index=1)
+    risk_status = st.selectbox("Risk status", ["OPEN", "MITIGATED", "ACCEPTED", "CLOSED"], index=0)
+    if st.button("Save Risk", use_container_width=True):
+        try:
+            row = governance.update_risk(
+                tenant_id=tenant_id.strip(),
+                officer_id=officer_id.strip(),
+                risk_code=risk_code.strip(),
+                title=risk_title.strip(),
+                mitigation=risk_mitigation.strip(),
+                owner_team=risk_owner.strip(),
+                impact=risk_impact,
+                likelihood=risk_likelihood,
+                status=risk_status,
+            )
+            st.success(f"Risk upserted: {row['risk_code']}")
         except Exception as exc:
             st.error(str(exc))
 

@@ -78,6 +78,10 @@ class MemoryStore:
     operational_runbooks: list[dict[str, Any]] = []
     governance_audit_reviews: list[dict[str, Any]] = []
     platform_access_grants: dict[str, dict[str, Any]] = {}
+    tenant_kpi_targets: list[dict[str, Any]] = []
+    tenant_kpi_snapshots: list[dict[str, Any]] = []
+    tenant_rollout_phases: list[dict[str, Any]] = []
+    tenant_risk_register: list[dict[str, Any]] = []
 
 
 def _now() -> str:
@@ -111,6 +115,8 @@ class Repository:
         self.part3_schema_ready: bool = False
         self.part4_schema_gaps: list[str] = []
         self.part4_schema_ready: bool = False
+        self.part5_schema_gaps: list[str] = []
+        self.part5_schema_ready: bool = False
         if self.client and not self._probe_documents_access():
             self.client = None
             if not self.error:
@@ -122,6 +128,8 @@ class Repository:
             self.part3_schema_ready = len(self.part3_schema_gaps) == 0
             self.part4_schema_gaps = self._detect_part4_schema_gaps()
             self.part4_schema_ready = len(self.part4_schema_gaps) == 0
+            self.part5_schema_gaps = self._detect_part5_schema_gaps()
+            self.part5_schema_ready = len(self.part5_schema_gaps) == 0
             if self.schema_gaps:
                 gap_preview = ", ".join(self.schema_gaps[:4])
                 self.error = (
@@ -138,6 +146,12 @@ class Repository:
                 gap_preview = ", ".join(self.part4_schema_gaps[:4])
                 self.error = (
                     "Supabase schema is missing Part-4 governance tables. "
+                    f"Missing/incompatible: {gap_preview}"
+                )
+            elif self.part5_schema_gaps:
+                gap_preview = ", ".join(self.part5_schema_gaps[:4])
+                self.error = (
+                    "Supabase schema is missing Part-5 KPI/rollout tables. "
                     f"Missing/incompatible: {gap_preview}"
                 )
 
@@ -222,6 +236,23 @@ class Repository:
                 gaps.append(f"table:{table}")
         return gaps
 
+    def _detect_part5_schema_gaps(self) -> list[str]:
+        if not self.client:
+            return []
+
+        gaps: list[str] = []
+        required_tables = [
+            "tenant_kpi_targets",
+            "tenant_kpi_snapshots",
+            "tenant_rollout_phases",
+            "tenant_risk_register",
+        ]
+        for table in required_tables:
+            result = exec_query(self.client.table(table).select("*").limit(1))
+            if result is None:
+                gaps.append(f"table:{table}")
+        return gaps
+
     def _default_policy(self, tenant_id: str) -> dict[str, Any]:
         policy = TenantPolicy(tenant_id=tenant_id)
         return {
@@ -295,6 +326,48 @@ class Repository:
             "sensitivity_tier": "STANDARD",
             "updated_at": _now(),
         }
+
+    def _default_kpi_targets(self, tenant_id: str) -> list[dict[str, Any]]:
+        now = _now()
+        return [
+            {"tenant_id": tenant_id, "kpi_key": "processing_time_online_sec", "target_value": 5.0, "unit": "seconds", "direction": "LTE", "description": "Avg. processing time per document (online)", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "ocr_accuracy_major_scripts_pct", "target_value": 90.0, "unit": "percent", "direction": "GTE", "description": "OCR accuracy for major scripts", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "template_classification_accuracy_pct", "target_value": 95.0, "unit": "percent", "direction": "GTE", "description": "Template classification accuracy", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "tamper_detection_recall_pct", "target_value": 85.0, "unit": "percent", "direction": "GTE", "description": "Tamper detection recall", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "fraud_flag_precision_pct", "target_value": 80.0, "unit": "percent", "direction": "GTE", "description": "Fraud flag precision", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "fraud_false_positive_rate_pct", "target_value": 10.0, "unit": "percent", "direction": "LTE", "description": "Fraud false-positive rate", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "auto_clear_rate_pct", "target_value": 70.0, "unit": "percent", "direction": "GTE", "description": "Auto-cleared documents after 6 months", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "review_queue_turnaround_hours", "target_value": 24.0, "unit": "hours", "direction": "LTE", "description": "Review queue turnaround", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "availability_pct", "target_value": 99.9, "unit": "percent", "direction": "GTE", "description": "Platform availability", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "rpo_minutes", "target_value": 5.0, "unit": "minutes", "direction": "LTE", "description": "Recovery Point Objective", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "rto_minutes", "target_value": 15.0, "unit": "minutes", "direction": "LTE", "description": "Recovery Time Objective", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "sync_backlog_clearance_minutes", "target_value": 60.0, "unit": "minutes", "direction": "LTE", "description": "Sync backlog clearance after outage", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "audit_traceability_pct", "target_value": 100.0, "unit": "percent", "direction": "GTE", "description": "Decisions audit-traceable", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "cross_tenant_isolation_proven_pct", "target_value": 100.0, "unit": "percent", "direction": "GTE", "description": "Cross-tenant isolation proof coverage", "updated_at": now},
+            {"tenant_id": tenant_id, "kpi_key": "unauthorized_access_incidents", "target_value": 0.0, "unit": "count", "direction": "LTE", "description": "Unauthorized access incidents", "updated_at": now},
+        ]
+
+    def _default_rollout_phases(self, tenant_id: str) -> list[dict[str, Any]]:
+        now = _now()
+        return [
+            {"tenant_id": tenant_id, "phase_key": "PHASE_0_FOUNDATION", "title": "Foundation", "duration_months_min": 2, "duration_months_max": 3, "status": "PLANNED", "description": "DAG orchestration, OCR/classification/extraction core, onboarding baseline monitoring", "updated_at": now},
+            {"tenant_id": tenant_id, "phase_key": "PHASE_1_CORE_AUTOMATION", "title": "Core Automation", "duration_months_min": 3, "duration_months_max": 4, "status": "PLANNED", "description": "Authenticity, validation, fraud, event backbone, offline MVP, onboarding 3-5 departments", "updated_at": now},
+            {"tenant_id": tenant_id, "phase_key": "PHASE_2_TRUST_GOVERNANCE", "title": "Trust and Governance", "duration_months_min": 3, "duration_months_max": 3, "status": "PLANNED", "description": "Issuer integrations, advanced fraud, explainability v2, DR/failover, audit dashboards, correction gate", "updated_at": now},
+            {"tenant_id": tenant_id, "phase_key": "PHASE_3_SCALE_EXPANSION", "title": "Scale and Expansion", "duration_months_min": 6, "duration_months_max": 12, "status": "PLANNED", "description": "20+ departments, full offline-first, handwriting OCR selective, fraud workspace, multi-region", "updated_at": now},
+        ]
+
+    def _default_risk_register(self, tenant_id: str) -> list[dict[str, Any]]:
+        now = _now()
+        return [
+            {"tenant_id": tenant_id, "risk_code": "RISK_1_DOC_QUALITY", "title": "Variability in document quality", "mitigation": "Preprocessing + quality scoring + fallback to review", "owner_team": "Platform Ops", "impact": "HIGH", "likelihood": "HIGH", "status": "OPEN", "updated_at": now},
+            {"tenant_id": tenant_id, "risk_code": "RISK_2_MARKER_FN", "title": "Stamp/signature false negatives", "mitigation": "Conservative thresholds + human escalation", "owner_team": "Fraud Team", "impact": "HIGH", "likelihood": "MEDIUM", "status": "OPEN", "updated_at": now},
+            {"tenant_id": tenant_id, "risk_code": "RISK_3_MODEL_OVERRELIANCE", "title": "Over-reliance on model output", "mitigation": "Human-in-loop + explainability + controlled MLOps", "owner_team": "Governance", "impact": "HIGH", "likelihood": "MEDIUM", "status": "OPEN", "updated_at": now},
+            {"tenant_id": tenant_id, "risk_code": "RISK_4_NOISY_CORRECTIONS", "title": "Noisy corrections poisoning training data", "mitigation": "Correction Validation Gate + sampling QA", "owner_team": "ML Team", "impact": "HIGH", "likelihood": "MEDIUM", "status": "OPEN", "updated_at": now},
+            {"tenant_id": tenant_id, "risk_code": "RISK_5_OFFLINE_CONFLICTS", "title": "Offline contradictions", "mitigation": "Local provisional policy, central truth authoritative", "owner_team": "Program", "impact": "MEDIUM", "likelihood": "HIGH", "status": "OPEN", "updated_at": now},
+            {"tenant_id": tenant_id, "risk_code": "RISK_6_TENANT_LEAK", "title": "Cross-tenant data leakage", "mitigation": "RLS + storage isolation + RBAC + monitoring", "owner_team": "Security", "impact": "CRITICAL", "likelihood": "LOW", "status": "OPEN", "updated_at": now},
+            {"tenant_id": tenant_id, "risk_code": "RISK_7_OFFLINE_BURST", "title": "Mass sync load spike", "mitigation": "Rate limiting + autoscaling + overflow queues", "owner_team": "SRE", "impact": "HIGH", "likelihood": "MEDIUM", "status": "OPEN", "updated_at": now},
+            {"tenant_id": tenant_id, "risk_code": "RISK_8_RULE_DRIFT", "title": "Inconsistent department rules", "mitigation": "Versioned rule engine + shadow rollout", "owner_team": "Tenant Admin", "impact": "MEDIUM", "likelihood": "MEDIUM", "status": "OPEN", "updated_at": now},
+        ]
 
     def create_document(self, doc: Document) -> dict[str, Any]:
         row = {
@@ -1368,6 +1441,272 @@ class Repository:
             if str(row.get("platform_role", "")).lower() in allowed:
                 return True
         return False
+
+    def seed_part5_baseline(self, tenant_id: str) -> dict[str, int]:
+        inserted = {"kpi_targets": 0, "rollout_phases": 0, "risks": 0}
+        existing_targets = self.list_kpi_targets(tenant_id)
+        if not existing_targets:
+            for row in self._default_kpi_targets(tenant_id):
+                self.upsert_kpi_target(
+                    tenant_id=tenant_id,
+                    kpi_key=row["kpi_key"],
+                    target_value=float(row["target_value"]),
+                    unit=str(row["unit"]),
+                    direction=str(row["direction"]),
+                    description=str(row["description"]),
+                )
+                inserted["kpi_targets"] += 1
+
+        existing_phases = self.list_rollout_phases(tenant_id)
+        if not existing_phases:
+            for row in self._default_rollout_phases(tenant_id):
+                self.upsert_rollout_phase(
+                    tenant_id=tenant_id,
+                    phase_key=row["phase_key"],
+                    title=row["title"],
+                    duration_months_min=int(row["duration_months_min"]),
+                    duration_months_max=int(row["duration_months_max"]),
+                    status=row["status"],
+                    description=row["description"],
+                )
+                inserted["rollout_phases"] += 1
+
+        existing_risks = self.list_risks(tenant_id)
+        if not existing_risks:
+            for row in self._default_risk_register(tenant_id):
+                self.upsert_risk(
+                    tenant_id=tenant_id,
+                    risk_code=row["risk_code"],
+                    title=row["title"],
+                    mitigation=row["mitigation"],
+                    owner_team=row["owner_team"],
+                    impact=row["impact"],
+                    likelihood=row["likelihood"],
+                    status=row["status"],
+                )
+                inserted["risks"] += 1
+        return inserted
+
+    def upsert_kpi_target(
+        self,
+        *,
+        tenant_id: str,
+        kpi_key: str,
+        target_value: float,
+        unit: str,
+        direction: str,
+        description: str,
+    ) -> dict[str, Any]:
+        row = {
+            "tenant_id": tenant_id,
+            "kpi_key": kpi_key,
+            "target_value": float(target_value),
+            "unit": unit,
+            "direction": direction,
+            "description": description,
+            "updated_at": _now(),
+        }
+        if self.client:
+            exec_query(self.client.table("tenant_kpi_targets").upsert(row, on_conflict="tenant_id,kpi_key"))
+            result = exec_query(
+                self.client.table("tenant_kpi_targets")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("kpi_key", kpi_key)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        replaced = False
+        for idx, existing in enumerate(MemoryStore.tenant_kpi_targets):
+            if existing.get("tenant_id") == tenant_id and existing.get("kpi_key") == kpi_key:
+                MemoryStore.tenant_kpi_targets[idx] = row
+                replaced = True
+                break
+        if not replaced:
+            MemoryStore.tenant_kpi_targets.append(row)
+        return row
+
+    def list_kpi_targets(self, tenant_id: str) -> list[dict[str, Any]]:
+        if self.client:
+            result = exec_query(
+                self.client.table("tenant_kpi_targets")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .order("kpi_key", desc=False)
+            )
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.tenant_kpi_targets if r.get("tenant_id") == tenant_id]
+        return sorted(rows, key=lambda x: str(x.get("kpi_key", "")))
+
+    def create_kpi_snapshot(
+        self,
+        *,
+        tenant_id: str,
+        kpi_key: str,
+        measured_value: float,
+        source: str,
+        notes: str | None = None,
+        measured_at: str | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "id": str(uuid4()),
+            "tenant_id": tenant_id,
+            "kpi_key": kpi_key,
+            "measured_value": float(measured_value),
+            "source": source,
+            "notes": notes,
+            "measured_at": measured_at or _now(),
+            "created_at": _now(),
+        }
+        if self.client:
+            result = exec_query(self.client.table("tenant_kpi_snapshots").insert(row))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.tenant_kpi_snapshots.append(row)
+        return row
+
+    def list_kpi_snapshots(self, tenant_id: str, kpi_key: str | None = None) -> list[dict[str, Any]]:
+        if self.client:
+            query = self.client.table("tenant_kpi_snapshots").select("*").eq("tenant_id", tenant_id).order("measured_at", desc=True)
+            if kpi_key:
+                query = query.eq("kpi_key", kpi_key)
+            result = exec_query(query)
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.tenant_kpi_snapshots if r.get("tenant_id") == tenant_id]
+        if kpi_key:
+            rows = [r for r in rows if r.get("kpi_key") == kpi_key]
+        return sorted(rows, key=lambda x: str(x.get("measured_at", "")), reverse=True)
+
+    def upsert_rollout_phase(
+        self,
+        *,
+        tenant_id: str,
+        phase_key: str,
+        title: str,
+        duration_months_min: int,
+        duration_months_max: int,
+        status: str,
+        description: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "tenant_id": tenant_id,
+            "phase_key": phase_key,
+            "title": title,
+            "duration_months_min": int(duration_months_min),
+            "duration_months_max": int(duration_months_max),
+            "status": status,
+            "description": description,
+            "start_date": start_date,
+            "end_date": end_date,
+            "updated_at": _now(),
+        }
+        if self.client:
+            exec_query(self.client.table("tenant_rollout_phases").upsert(row, on_conflict="tenant_id,phase_key"))
+            result = exec_query(
+                self.client.table("tenant_rollout_phases")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("phase_key", phase_key)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        replaced = False
+        for idx, existing in enumerate(MemoryStore.tenant_rollout_phases):
+            if existing.get("tenant_id") == tenant_id and existing.get("phase_key") == phase_key:
+                MemoryStore.tenant_rollout_phases[idx] = row
+                replaced = True
+                break
+        if not replaced:
+            MemoryStore.tenant_rollout_phases.append(row)
+        return row
+
+    def list_rollout_phases(self, tenant_id: str) -> list[dict[str, Any]]:
+        if self.client:
+            result = exec_query(
+                self.client.table("tenant_rollout_phases")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .order("phase_key", desc=False)
+            )
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.tenant_rollout_phases if r.get("tenant_id") == tenant_id]
+        return sorted(rows, key=lambda x: str(x.get("phase_key", "")))
+
+    def upsert_risk(
+        self,
+        *,
+        tenant_id: str,
+        risk_code: str,
+        title: str,
+        mitigation: str,
+        owner_team: str,
+        impact: str,
+        likelihood: str,
+        status: str,
+    ) -> dict[str, Any]:
+        row = {
+            "tenant_id": tenant_id,
+            "risk_code": risk_code,
+            "title": title,
+            "mitigation": mitigation,
+            "owner_team": owner_team,
+            "impact": impact,
+            "likelihood": likelihood,
+            "status": status,
+            "updated_at": _now(),
+        }
+        if self.client:
+            exec_query(self.client.table("tenant_risk_register").upsert(row, on_conflict="tenant_id,risk_code"))
+            result = exec_query(
+                self.client.table("tenant_risk_register")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("risk_code", risk_code)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        replaced = False
+        for idx, existing in enumerate(MemoryStore.tenant_risk_register):
+            if existing.get("tenant_id") == tenant_id and existing.get("risk_code") == risk_code:
+                MemoryStore.tenant_risk_register[idx] = row
+                replaced = True
+                break
+        if not replaced:
+            MemoryStore.tenant_risk_register.append(row)
+        return row
+
+    def list_risks(self, tenant_id: str) -> list[dict[str, Any]]:
+        if self.client:
+            result = exec_query(
+                self.client.table("tenant_risk_register")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .order("risk_code", desc=False)
+            )
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.tenant_risk_register if r.get("tenant_id") == tenant_id]
+        return sorted(rows, key=lambda x: str(x.get("risk_code", "")))
 
     def get_active_template(self, tenant_id: str, document_type: str) -> dict[str, Any]:
         dtype = (document_type or "UNKNOWN").upper()

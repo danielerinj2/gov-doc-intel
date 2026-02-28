@@ -164,6 +164,10 @@ alter table public.correction_validation_gate enable row level security;
 alter table public.operational_runbooks enable row level security;
 alter table public.governance_audit_reviews enable row level security;
 alter table public.platform_access_grants enable row level security;
+alter table public.tenant_kpi_targets enable row level security;
+alter table public.tenant_kpi_snapshots enable row level security;
+alter table public.tenant_rollout_phases enable row level security;
+alter table public.tenant_risk_register enable row level security;
 
 -- tenants
  drop policy if exists tenants_select_tenant on public.tenants;
@@ -581,6 +585,65 @@ to authenticated
 using (public.has_platform_role(array['platform_super_admin']))
 with check (public.has_platform_role(array['platform_super_admin']));
 
+ drop policy if exists tenant_kpi_targets_select_tenant on public.tenant_kpi_targets;
+create policy tenant_kpi_targets_select_tenant
+on public.tenant_kpi_targets
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists tenant_kpi_targets_write_admin on public.tenant_kpi_targets;
+create policy tenant_kpi_targets_write_admin
+on public.tenant_kpi_targets
+for all
+to authenticated
+using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
+with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+
+ drop policy if exists tenant_kpi_snapshots_select_tenant on public.tenant_kpi_snapshots;
+create policy tenant_kpi_snapshots_select_tenant
+on public.tenant_kpi_snapshots
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists tenant_kpi_snapshots_insert_writer on public.tenant_kpi_snapshots;
+create policy tenant_kpi_snapshots_insert_writer
+on public.tenant_kpi_snapshots
+for insert
+to authenticated
+with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+
+ drop policy if exists tenant_rollout_phases_select_tenant on public.tenant_rollout_phases;
+create policy tenant_rollout_phases_select_tenant
+on public.tenant_rollout_phases
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists tenant_rollout_phases_write_admin on public.tenant_rollout_phases;
+create policy tenant_rollout_phases_write_admin
+on public.tenant_rollout_phases
+for all
+to authenticated
+using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
+with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+
+ drop policy if exists tenant_risk_register_select_tenant on public.tenant_risk_register;
+create policy tenant_risk_register_select_tenant
+on public.tenant_risk_register
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists tenant_risk_register_write_admin on public.tenant_risk_register;
+create policy tenant_risk_register_write_admin
+on public.tenant_risk_register
+for all
+to authenticated
+using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
+with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+
 -- Grants
 revoke all on table public.tenants from anon;
 revoke all on table public.officers from anon;
@@ -606,6 +669,10 @@ revoke all on table public.correction_validation_gate from anon;
 revoke all on table public.operational_runbooks from anon;
 revoke all on table public.governance_audit_reviews from anon;
 revoke all on table public.platform_access_grants from anon;
+revoke all on table public.tenant_kpi_targets from anon;
+revoke all on table public.tenant_kpi_snapshots from anon;
+revoke all on table public.tenant_rollout_phases from anon;
+revoke all on table public.tenant_risk_register from anon;
 
 revoke all on table public.tenants from authenticated;
 revoke all on table public.officers from authenticated;
@@ -631,6 +698,10 @@ revoke all on table public.correction_validation_gate from authenticated;
 revoke all on table public.operational_runbooks from authenticated;
 revoke all on table public.governance_audit_reviews from authenticated;
 revoke all on table public.platform_access_grants from authenticated;
+revoke all on table public.tenant_kpi_targets from authenticated;
+revoke all on table public.tenant_kpi_snapshots from authenticated;
+revoke all on table public.tenant_rollout_phases from authenticated;
+revoke all on table public.tenant_risk_register from authenticated;
 
 grant select on table public.tenants to authenticated;
 grant select, insert, update, delete on table public.officers to authenticated;
@@ -656,6 +727,10 @@ grant select, insert, update, delete on table public.correction_validation_gate 
 grant select, insert, update, delete on table public.operational_runbooks to authenticated;
 grant select, insert, update, delete on table public.governance_audit_reviews to authenticated;
 grant select, insert, update, delete on table public.platform_access_grants to authenticated;
+grant select, insert, update, delete on table public.tenant_kpi_targets to authenticated;
+grant select, insert on table public.tenant_kpi_snapshots to authenticated;
+grant select, insert, update, delete on table public.tenant_rollout_phases to authenticated;
+grant select, insert, update, delete on table public.tenant_risk_register to authenticated;
 
 -- Storage bucket isolation
  do $$

@@ -14,6 +14,7 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
 - Level-2 module boundaries across OCR, classification, template/rules, extraction, validation, authenticity, fraud, issuer verification, explainability/audit, human review workload, output integration, offline sync, and monitoring/MLOps
 - AI audit logs, module metrics, webhook outbox, human review assignment queue, and correction validation gate
 - Governance/Ops/Tenancy layer with tenant data policies, partition config, platform oversight grants, operational runbooks, and governance audit reviews
+- KPI/SLA target management, rollout phase planning, and risk register tracking (Part 5)
 - Supabase persistence with in-memory fallback
 
 ## Setup
@@ -30,6 +31,7 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
    - If your DB was created earlier, run `supabase/part2_contracts_patch.sql` once
    - If your DB predates Part-3 module tables, run `supabase/part3_operational_patch.sql` once
    - If your DB predates Part-4 governance tables, run `supabase/part4_governance_patch.sql` once
+   - If your DB predates Part-5 KPI/rollout/risk tables, run `supabase/part5_kpi_rollout_patch.sql` once
 4. Run app:
    ```bash
    streamlit run streamlit_app.py
@@ -129,6 +131,14 @@ Implemented tenant-scoped operational persistence:
 
 Detailed governance notes: `docs/PART4_GOVERNANCE.md`.
 
+## Part-5 Program and KPI Tables
+- `tenant_kpi_targets` (target values for program/operational KPIs)
+- `tenant_kpi_snapshots` (time-series measured KPI values)
+- `tenant_rollout_phases` (phase-wise rollout tracking)
+- `tenant_risk_register` (risk and mitigation registry)
+
+Executive program/tender summary: `docs/PART5_EXECUTIVE_PRD.md`.
+
 ## Part-2 Data Contracts
 Strict Pydantic schemas are implemented in:
 - `app/contracts/schemas.py`
@@ -178,6 +188,10 @@ If app status shows `PART3_SCHEMA_READY=false`, apply:
 
 If app status shows `PART4_SCHEMA_READY=false`, apply:
 - `supabase/part4_governance_patch.sql`
+- then rerun `supabase/rls_policies.sql`
+
+If app status shows `PART5_SCHEMA_READY=false`, apply:
+- `supabase/part5_kpi_rollout_patch.sql`
 - then rerun `supabase/rls_policies.sql`
 
 ## Debug Groq
