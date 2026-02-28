@@ -53,7 +53,10 @@ class PipelineNodes:
 
     def classification(self, ctx: dict[str, Any]) -> dict[str, Any]:
         text = ctx["ocr_multi_script"]["ocr_text"]
-        return self.groq.classify(text)
+        out = self.groq.classify(text)
+        out.setdefault("model_metadata", {"model_id": "doc-classifier-v2", "model_version": "2.0.0"})
+        out.setdefault("reasons", [])
+        return out
 
     def stamps_seals(self, ctx: dict[str, Any]) -> dict[str, Any]:
         t = ctx["ocr_multi_script"]["ocr_text"].lower()
@@ -76,9 +79,10 @@ class PipelineNodes:
         template = repo.get_active_template(tenant_id, dtype)
         return {
             "template_id": template.get("template_id", f"tpl_{dtype.lower()}"),
-            "template_version": template.get("version", 1),
+            "template_version": template.get("template_version", "2025.1.0"),
             "document_type": dtype,
             "template_config": template.get("config", {}),
+            "policy_rule_set_id": template.get("policy_rule_set_id", f"RULESET_{dtype}_DEFAULT"),
         }
 
     def image_features(self, ctx: dict[str, Any]) -> dict[str, Any]:
@@ -138,6 +142,7 @@ class PipelineNodes:
             "registry_status": registry,
             "rule_name": rule.get("rule_name", f"rule_{dtype.lower()}"),
             "rule_version": rule.get("version", 1),
+            "rule_set_id": rule.get("rule_set_id", f"RULESET_{dtype}_DEFAULT"),
             "min_extract_confidence": min_extract_confidence,
             "min_approval_confidence": min_approval_confidence,
             "max_approval_risk": max_approval_risk,
@@ -164,6 +169,15 @@ class PipelineNodes:
         return {
             "confidence": confidence,
             "risk_score": risk_score,
+            "risk_level": (
+                "CRITICAL"
+                if risk_score >= 0.9
+                else "HIGH"
+                if risk_score >= 0.75
+                else "MEDIUM"
+                if risk_score >= 0.45
+                else "LOW"
+            ),
             "validation": validation,
             "fraud": fraud,
             "registry": registry,

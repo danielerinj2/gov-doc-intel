@@ -5,32 +5,36 @@ from enum import Enum
 
 class DocumentState(str, Enum):
     RECEIVED = "RECEIVED"
-    PREPROCESSED = "PREPROCESSED"
-    OCR_DONE = "OCR_DONE"
-    CLASSIFIED = "CLASSIFIED"
-    EXTRACTED = "EXTRACTED"
-    VALIDATED = "VALIDATED"
-    VERIFIED = "VERIFIED"
-    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    PREPROCESSING = "PREPROCESSING"
+    OCR_COMPLETE = "OCR_COMPLETE"
+    BRANCHED = "BRANCHED"
+    MERGED = "MERGED"
+    WAITING_FOR_REVIEW = "WAITING_FOR_REVIEW"
+    REVIEW_IN_PROGRESS = "REVIEW_IN_PROGRESS"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     DISPUTED = "DISPUTED"
-    REOPENED = "REOPENED"
-    NOTIFIED = "NOTIFIED"
+    EXPIRED = "EXPIRED"
+    FAILED = "FAILED"
+    ARCHIVED = "ARCHIVED"
 
 
 ALLOWED_TRANSITIONS: dict[DocumentState, set[DocumentState]] = {
-    DocumentState.RECEIVED: {DocumentState.PREPROCESSED},
-    DocumentState.PREPROCESSED: {DocumentState.OCR_DONE},
-    DocumentState.OCR_DONE: {DocumentState.CLASSIFIED},
-    DocumentState.CLASSIFIED: {DocumentState.EXTRACTED},
-    DocumentState.EXTRACTED: {DocumentState.VALIDATED},
-    DocumentState.VALIDATED: {DocumentState.VERIFIED, DocumentState.REVIEW_REQUIRED},
-    DocumentState.VERIFIED: {DocumentState.APPROVED, DocumentState.REJECTED},
-    DocumentState.REVIEW_REQUIRED: {DocumentState.APPROVED, DocumentState.REJECTED},
-    DocumentState.REJECTED: {DocumentState.DISPUTED, DocumentState.NOTIFIED},
-    DocumentState.DISPUTED: {DocumentState.REOPENED},
-    DocumentState.REOPENED: {DocumentState.REVIEW_REQUIRED},
-    DocumentState.APPROVED: {DocumentState.NOTIFIED},
-    DocumentState.NOTIFIED: set(),
+    DocumentState.RECEIVED: {DocumentState.PREPROCESSING},
+    DocumentState.PREPROCESSING: {DocumentState.OCR_COMPLETE},
+    DocumentState.OCR_COMPLETE: {DocumentState.BRANCHED},
+    DocumentState.BRANCHED: {DocumentState.MERGED},
+    DocumentState.MERGED: {
+        DocumentState.WAITING_FOR_REVIEW,
+        DocumentState.APPROVED,
+        DocumentState.REJECTED,
+    },
+    DocumentState.WAITING_FOR_REVIEW: {DocumentState.REVIEW_IN_PROGRESS, DocumentState.EXPIRED},
+    DocumentState.REVIEW_IN_PROGRESS: {DocumentState.APPROVED, DocumentState.REJECTED},
+    DocumentState.REJECTED: {DocumentState.DISPUTED, DocumentState.ARCHIVED},
+    DocumentState.DISPUTED: {DocumentState.REVIEW_IN_PROGRESS},
+    DocumentState.APPROVED: {DocumentState.ARCHIVED},
+    DocumentState.EXPIRED: {DocumentState.ARCHIVED},
+    DocumentState.FAILED: {DocumentState.ARCHIVED},
+    DocumentState.ARCHIVED: set(),
 }

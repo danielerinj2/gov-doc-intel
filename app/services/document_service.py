@@ -1,24 +1,65 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import time
 from collections import defaultdict
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
-from app.domain.models import Dispute, Document, DocumentEvent, Officer
+from app.contracts.schemas import (
+    CitizenCommEvent,
+    CitizenCommunicationRecord,
+    ClassificationOutput,
+    DocumentRecord,
+    ExplainabilityRecord,
+    ExtractionOutput,
+    ExtractedField,
+    FieldComparison,
+    FieldValidationResult,
+    FraudComponent,
+    FraudRiskComponents,
+    FraudRiskOutput,
+    HumanReviewRecord,
+    ImageForensics,
+    IngestionRecord,
+    IngestionSubmittedBy,
+    IssuerResponseMetadata,
+    IssuerVerificationOutput,
+    MLCheckResult,
+    MLTrainingFlagsRecord,
+    ModelMetadata,
+    OCRLine,
+    OCROutput,
+    OCRPage,
+    OCRWord,
+    OfflineMetadataRecord,
+    PreprocessingMetadata,
+    RetentionPolicyRecord,
+    RuleResult,
+    ScoreRecord,
+    StateHistoryEvent,
+    StateMachineRecord,
+    TemplateReference,
+    ValidationModelMetadata,
+    ValidationOutput,
+    VisualAuthenticityOutput,
+    VisualMarkerResult,
+)
+from app.domain.models import Dispute, Document, DocumentEvent, HumanReviewEvent, Officer
 from app.domain.state_machine import StateMachine
 from app.domain.states import DocumentState
+from app.events.bus import InMemoryEventBus
+from app.events.contracts import BRANCH_MODULES, build_event_envelope
 from app.infra.groq_adapter import GroqAdapter
-from app.infra.repositories import (
-    ADMIN_ROLES,
-    REVIEW_ROLES,
-    WRITER_ROLES,
-    Repository,
-)
+from app.infra.repositories import REVIEW_ROLES, WRITER_ROLES, Repository
 from app.pipeline.dag import DAG, Node
 from app.pipeline.nodes import PipelineNodes
+from app.services.dr_service import DRService
+from app.services.notification_service import NotificationService
 
 
 class DocumentService:
@@ -28,6 +69,9 @@ class DocumentService:
         self.repo = Repository()
         self.sm = StateMachine()
         self.nodes = PipelineNodes(GroqAdapter())
+        self.bus = InMemoryEventBus()
+        self.notification_service = NotificationService(self.repo)
+        self.dr_service = DRService()
         self.dag = DAG(
             [
                 Node("preprocessing_hashing", self.nodes.preprocessing_hashing, []),
@@ -68,10 +112,68 @@ class DocumentService:
 
         policy = self.repo.get_tenant_policy(tenant_id)
         retention_days = int(policy.get("data_retention_days", 365))
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=retention_days)).isoformat()
+        retention_until = (datetime.now(timezone.utc) + timedelta(days=retention_days)).isoformat()
         bucket_name = self.repo.get_tenant_bucket(tenant_id)
 
-        m = metadata or {}
+        perceptual_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+        received_at = datetime.now(timezone.utc).isoformat()
+
+        m = dict(metadata or {})
+        m.setdefault(
+            "ingestion",
+            {
+                "source": m.get("source", "ONLINE_PORTAL"),
+                "submitted_by": {"actor_type": "OPERATOR", "actor_id": officer_id},
+                "received_at": received_at,
+                "original_file_uri": m.get("original_file_uri"),
+                "perceptual_hash": perceptual_hash,
+                "dedup_matches": [],
+            },
+        )
+        m.setdefault(
+            "state_history",
+            [
+                {
+                    "from_state": None,
+                    "to_state": DocumentState.RECEIVED.value,
+                    "at": received_at,
+                    "by": "SYSTEM",
+                    "reason": "INITIAL_INGEST",
+                }
+            ],
+        )
+        m.setdefault("human_review", {"assigned_to_officer_id": None, "assigned_at": None, "review_events": []})
+        m.setdefault("citizen_communication", {"preferred_channels": ["SMS", "PORTAL"], "events": []})
+        m.setdefault(
+            "offline_metadata",
+            {
+                "processed_offline": False,
+                "offline_node_id": None,
+                "offline_model_versions": {},
+                "first_seen_offline_at": None,
+                "synced_to_central_at": None,
+            },
+        )
+        m.setdefault(
+            "ml_training_flags",
+            {
+                "eligible_for_training": {
+                    "ocr": True,
+                    "classification": True,
+                    "extraction": True,
+                    "fraud": True,
+                },
+                "data_quality_notes": [],
+            },
+        )
+        m.setdefault(
+            "retention_policy",
+            {
+                "policy_id": f"TENANT_{tenant_id}_DOC_RETAIN_{retention_days}D",
+                "retention_until": retention_until,
+                "archival_status": "ACTIVE",
+            },
+        )
         m.setdefault("tenant_storage_bucket", bucket_name)
 
         doc = Document(
@@ -80,21 +182,23 @@ class DocumentService:
             file_name=file_name,
             raw_text=raw_text,
             metadata=m,
-            expires_at=expires_at,
+            expires_at=retention_until,
+            state=DocumentState.RECEIVED,
         )
         row = self.repo.create_document(doc)
+
         self._event(
-            doc.id,
-            tenant_id,
-            officer_id,
-            "document.received",
-            {
-                "file_name": file_name,
-                "retention_days": retention_days,
-                "expires_at": expires_at,
-                "tenant_storage_bucket": bucket_name,
-            },
+            document_id=doc.id,
+            tenant_id=tenant_id,
+            actor_type="SYSTEM",
+            actor_id=officer_id,
+            event_type="document.received",
+            payload={"file_name": file_name},
+            reason="INITIAL_INGEST",
+            policy_version=1,
+            model_versions={"pipeline": "1.0.0"},
         )
+
         return row
 
     def process_document(self, document_id: str, tenant_id: str, officer_id: str) -> dict[str, Any]:
@@ -103,113 +207,264 @@ class DocumentService:
         if not doc:
             raise ValueError("Document not found for tenant")
 
+        job_id = str(uuid4())
+        correlation_id = job_id
         policy = self.repo.get_tenant_policy(tenant_id)
+        policy_version = 1
+        model_versions = {
+            "ocr_model_id": "ocr-devanagari-v1",
+            "classifier_model_id": "doc-classifier-v2",
+            "extractor_model_id": "layout-extractor-v1",
+            "fraud_model_id": "fraud-aggregator-v1",
+        }
 
-        # State progression before merge decision.
-        self._transition(doc, DocumentState.PREPROCESSED, officer_id)
-        self._transition(doc, DocumentState.OCR_DONE, officer_id)
-        self._transition(doc, DocumentState.CLASSIFIED, officer_id)
-        self._transition(doc, DocumentState.EXTRACTED, officer_id)
-        self._transition(doc, DocumentState.VALIDATED, officer_id)
+        try:
+            self._transition(doc, DocumentState.PREPROCESSING, "SYSTEM", officer_id, "PIPELINE_STARTED")
 
-        ctx = self.dag.run(
-            {
-                "raw_text": doc.get("raw_text", ""),
-                "tenant_id": tenant_id,
-                "document_id": doc["id"],
-                "repo": self.repo,
-                "tenant_policy": policy,
-            }
-        )
+            ctx = self.dag.run(
+                {
+                    "raw_text": doc.get("raw_text", ""),
+                    "tenant_id": tenant_id,
+                    "document_id": doc["id"],
+                    "repo": self.repo,
+                    "tenant_policy": policy,
+                }
+            )
 
-        dedup_hash = ctx["dedup_cross_submission"]["dedup_hash"]
-        decision = ctx["output_notification"]["final_decision"]
-        confidence = ctx["decision_explainability"]["confidence"]
-        risk = ctx["decision_explainability"]["risk_score"]
-        template_id = ctx["template_map"]["template_id"]
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="document.preprocessed",
+                payload={
+                    "quality_score": ctx["preprocessing_hashing"]["quality_score"],
+                    "dedup_hash": ctx["preprocessing_hashing"]["dedup_hash"],
+                },
+                reason="PREPROCESSING_COMPLETE",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
 
-        if decision in {"APPROVE", "REJECT"}:
-            self._transition(doc, DocumentState.VERIFIED, officer_id)
-            self._transition(doc, DocumentState.APPROVED if decision == "APPROVE" else DocumentState.REJECTED, officer_id)
-        else:
-            self._transition(doc, DocumentState.REVIEW_REQUIRED, officer_id)
+            self._transition(doc, DocumentState.OCR_COMPLETE, "SYSTEM", officer_id, "OCR_STAGE_COMPLETE")
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="ocr.completed",
+                payload={"ocr_confidence": ctx["ocr_multi_script"]["ocr_confidence"]},
+                reason="OCR_COMPLETE",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
 
-        updated = self.repo.update_document(
-            doc["id"],
-            dedup_hash=dedup_hash,
-            confidence=confidence,
-            risk_score=risk,
-            decision=decision,
-            template_id=template_id,
-            derived=ctx["node_outputs"],
-        )
-        if not updated:
-            raise RuntimeError("Document update failed")
+            self._transition(doc, DocumentState.BRANCHED, "SYSTEM", officer_id, "PARALLEL_BRANCHING")
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="branch.started",
+                payload={"modules": sorted(list(BRANCH_MODULES))},
+                reason="BRANCH_FANOUT",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
 
-        self._event(
-            doc["id"],
-            tenant_id,
-            officer_id,
-            "decision.finalized",
-            {
-                "decision": decision,
-                "confidence": confidence,
-                "risk_score": risk,
-                "template_id": template_id,
-                "execution_order": ctx["execution_order"],
-            },
-        )
-        return updated
+            for module_name in sorted(BRANCH_MODULES):
+                out = ctx.get(module_name, {})
+                self._event(
+                    document_id=doc["id"],
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=officer_id,
+                    event_type=f"branch.completed.{module_name}",
+                    payload={"module": module_name, "status": "COMPLETED", "summary": out},
+                    reason="BRANCH_COMPLETE",
+                    policy_version=policy_version,
+                    model_versions=model_versions,
+                    correlation_id=correlation_id,
+                )
 
-    def notify(self, document_id: str, tenant_id: str, officer_id: str) -> dict[str, Any] | None:
-        self._authorize(officer_id, tenant_id, WRITER_ROLES)
-        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
-        if not doc:
-            return None
+            self._transition(doc, DocumentState.MERGED, "SYSTEM", officer_id, "BRANCHES_MERGED")
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="document.merged",
+                payload={
+                    "confidence": ctx["merge_node"]["confidence"],
+                    "risk_score": ctx["merge_node"]["risk_score"],
+                },
+                reason="MERGE_COMPLETE",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
 
-        state = DocumentState(doc["state"])
-        if state not in {DocumentState.APPROVED, DocumentState.REJECTED}:
-            return doc
+            decision = ctx["output_notification"]["final_decision"]
+            reason_codes = ctx["decision_explainability"]["reason_codes"]
 
-        self._transition(doc, DocumentState.NOTIFIED, officer_id)
-        self._event(doc["id"], tenant_id, officer_id, "notification.sent", {"channel": "PORTAL"})
-        return self.repo.get_document(document_id, tenant_id=tenant_id)
+            if decision == "REVIEW":
+                self._transition(doc, DocumentState.WAITING_FOR_REVIEW, "SYSTEM", officer_id, "FLAGGED_FOR_REVIEW")
+                self._event(
+                    document_id=doc["id"],
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=officer_id,
+                    event_type="document.flagged.for_review",
+                    payload={"reason_codes": reason_codes},
+                    reason="FLAGGED_FOR_OFFICER_REVIEW",
+                    policy_version=policy_version,
+                    model_versions=model_versions,
+                    correlation_id=correlation_id,
+                )
+                final_state = DocumentState.WAITING_FOR_REVIEW
+            elif decision == "APPROVE":
+                self._transition(doc, DocumentState.APPROVED, "SYSTEM", officer_id, "AUTO_APPROVAL")
+                self._event(
+                    document_id=doc["id"],
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=officer_id,
+                    event_type="document.approved",
+                    payload={"decision": "APPROVED"},
+                    reason="AUTO_APPROVAL",
+                    policy_version=policy_version,
+                    model_versions=model_versions,
+                    correlation_id=correlation_id,
+                )
+                final_state = DocumentState.APPROVED
+            else:
+                self._transition(doc, DocumentState.REJECTED, "SYSTEM", officer_id, "AUTO_REJECTION")
+                self._event(
+                    document_id=doc["id"],
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=officer_id,
+                    event_type="document.rejected",
+                    payload={"decision": "REJECTED", "reason_codes": reason_codes},
+                    reason="AUTO_REJECTION",
+                    policy_version=policy_version,
+                    model_versions=model_versions,
+                    correlation_id=correlation_id,
+                )
+                final_state = DocumentState.REJECTED
 
-    def open_dispute(self, document_id: str, reason: str, evidence_note: str, tenant_id: str, officer_id: str) -> dict[str, Any]:
-        self._authorize(officer_id, tenant_id, WRITER_ROLES)
-        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
-        if not doc:
-            raise ValueError("Document not found for tenant")
+            updated = self.repo.update_document(
+                doc["id"],
+                dedup_hash=ctx["dedup_cross_submission"]["dedup_hash"],
+                confidence=ctx["decision_explainability"]["confidence"],
+                risk_score=ctx["decision_explainability"]["risk_score"],
+                decision=decision,
+                template_id=ctx["template_map"]["template_id"],
+                state=final_state,
+                derived=ctx["node_outputs"],
+                last_job_id=job_id,
+            )
+            if not updated:
+                raise RuntimeError("Document update failed")
 
-        state = DocumentState(doc["state"])
-        if state == DocumentState.REJECTED:
-            self._transition(doc, DocumentState.DISPUTED, officer_id)
-        elif state != DocumentState.NOTIFIED:
-            raise ValueError("Dispute allowed after rejection/notification only")
+            latest = self.repo.get_document(doc["id"], tenant_id=tenant_id) or updated
+            record = self._build_document_record(latest, job_id, ctx)
+            self.repo.save_document_record(tenant_id, doc["id"], job_id, "1.0", {"document_record": record.model_dump()})
 
-        dispute = Dispute(
-            document_id=doc["id"],
-            tenant_id=tenant_id,
-            reason=reason,
-            evidence_note=evidence_note,
-        )
-        row = self.repo.create_dispute(dispute)
-        self._event(doc["id"], tenant_id, officer_id, "dispute.opened", {"reason": reason})
-        return row
+            # Offline conflict handling: central result overrides local provisional result.
+            provisional = latest.get("provisional_decision")
+            if provisional and provisional != decision:
+                self.emit_custom_event(
+                    document_id=doc["id"],
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=officer_id,
+                    event_type="offline.conflict.detected",
+                    payload={"local_provisional": provisional, "central_decision": decision},
+                    reason="CENTRAL_PIPELINE_OVERRIDE",
+                )
 
-    def manual_decision(self, document_id: str, decision: str, tenant_id: str, officer_id: str) -> dict[str, Any]:
+            return latest
+        except Exception as exc:
+            safe_doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+            if safe_doc and safe_doc.get("state") != DocumentState.ARCHIVED.value:
+                try:
+                    self._transition(safe_doc, DocumentState.FAILED, "SYSTEM", officer_id, "PIPELINE_EXCEPTION")
+                except Exception:
+                    pass
+
+            self.emit_custom_event(
+                document_id=document_id,
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="document.failed",
+                payload={"error": str(exc)},
+                reason="PIPELINE_EXCEPTION",
+            )
+            raise
+
+    def start_review(self, document_id: str, tenant_id: str, officer_id: str, review_level: str = "L1") -> dict[str, Any]:
         self._authorize(officer_id, tenant_id, REVIEW_ROLES)
         doc = self.repo.get_document(document_id, tenant_id=tenant_id)
         if not doc:
             raise ValueError("Document not found for tenant")
 
-        if DocumentState(doc["state"]) != DocumentState.REVIEW_REQUIRED:
-            raise ValueError("Manual decision is only allowed from REVIEW_REQUIRED")
+        state = DocumentState(doc["state"])
+        if state not in {DocumentState.WAITING_FOR_REVIEW, DocumentState.DISPUTED}:
+            raise ValueError("Review can only start from WAITING_FOR_REVIEW or DISPUTED")
+
+        self._transition(doc, DocumentState.REVIEW_IN_PROGRESS, "OFFICER", officer_id, "OFFICER_PICKED_REVIEW")
+
+        metadata = dict(doc.get("metadata") or {})
+        human_review = dict(metadata.get("human_review") or {})
+        human_review["assigned_to_officer_id"] = officer_id
+        human_review["assigned_at"] = datetime.now(timezone.utc).isoformat()
+        metadata["human_review"] = human_review
+        updated = self.repo.update_document(doc["id"], metadata=metadata)
+        if updated:
+            doc.update(updated)
+
+        self._event(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            actor_type="OFFICER",
+            actor_id=officer_id,
+            event_type="review.started",
+            payload={"review_level": review_level},
+            reason="REVIEW_STARTED",
+            policy_version=1,
+            model_versions=None,
+        )
+        return self.repo.get_document(doc["id"], tenant_id=tenant_id) or doc
+
+    def manual_decision(
+        self,
+        document_id: str,
+        decision: str,
+        tenant_id: str,
+        officer_id: str,
+        reason: str = "OFFICER_DECISION",
+    ) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            raise ValueError("Document not found for tenant")
+
+        if DocumentState(doc["state"]) != DocumentState.REVIEW_IN_PROGRESS:
+            raise ValueError("Manual decision is only allowed from REVIEW_IN_PROGRESS")
 
         if decision == "APPROVE":
-            self._transition(doc, DocumentState.APPROVED, officer_id)
+            self._transition(doc, DocumentState.APPROVED, "OFFICER", officer_id, reason)
+            target_event = "document.approved"
+            payload = {"decision": "APPROVED"}
         elif decision == "REJECT":
-            self._transition(doc, DocumentState.REJECTED, officer_id)
+            self._transition(doc, DocumentState.REJECTED, "OFFICER", officer_id, reason)
+            target_event = "document.rejected"
+            payload = {"decision": "REJECTED", "reason_codes": [reason]}
         else:
             raise ValueError("Unsupported decision")
 
@@ -217,8 +472,202 @@ class DocumentService:
         if not updated:
             raise RuntimeError("Update failed")
 
-        self._event(doc["id"], tenant_id, officer_id, "manual.review.completed", {"decision": decision})
-        return updated
+        self._event(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            actor_type="OFFICER",
+            actor_id=officer_id,
+            event_type="review.completed",
+            payload={"decision": decision},
+            reason=reason,
+            policy_version=1,
+            model_versions=None,
+        )
+        self._event(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            actor_type="OFFICER",
+            actor_id=officer_id,
+            event_type=target_event,
+            payload=payload,
+            reason=reason,
+            policy_version=1,
+            model_versions=None,
+        )
+
+        self._append_human_review_event(
+            updated,
+            HumanReviewEvent(
+                officer_id=officer_id,
+                action="DECISION_MADE",
+                decision=decision,
+                reason=reason,
+                at=datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+        return self.repo.get_document(doc["id"], tenant_id=tenant_id) or updated
+
+    def open_dispute(
+        self,
+        document_id: str,
+        reason: str,
+        evidence_note: str,
+        tenant_id: str,
+        officer_id: str,
+        citizen_actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, WRITER_ROLES)
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            raise ValueError("Document not found for tenant")
+
+        if DocumentState(doc["state"]) != DocumentState.REJECTED:
+            raise ValueError("Dispute allowed only from REJECTED state")
+
+        self._transition(doc, DocumentState.DISPUTED, "CITIZEN", citizen_actor_id or doc.get("citizen_id"), "DISPUTE_SUBMITTED")
+
+        dispute = Dispute(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            reason=reason,
+            evidence_note=evidence_note,
+            status="DISPUTE_SUBMITTED",
+        )
+        row = self.repo.create_dispute(dispute)
+        self._event(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            actor_type="CITIZEN",
+            actor_id=citizen_actor_id or doc.get("citizen_id"),
+            event_type="document.disputed",
+            payload={"reason": reason},
+            reason="DISPUTE_SUBMITTED",
+            policy_version=1,
+            model_versions=None,
+        )
+        return row
+
+    def archive_document(self, document_id: str, tenant_id: str, officer_id: str, archive_reason: str = "RETENTION_LIFECYCLE") -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            raise ValueError("Document not found for tenant")
+
+        state = DocumentState(doc["state"])
+        if state not in {DocumentState.APPROVED, DocumentState.REJECTED, DocumentState.EXPIRED, DocumentState.FAILED}:
+            raise ValueError("Document can only be archived from APPROVED, REJECTED, EXPIRED, or FAILED")
+
+        self._transition(doc, DocumentState.ARCHIVED, "SYSTEM", officer_id, archive_reason)
+        self._event(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            actor_type="SYSTEM",
+            actor_id=officer_id,
+            event_type="document.archived",
+            payload={"archive_reason": archive_reason},
+            reason=archive_reason,
+            policy_version=1,
+            model_versions=None,
+        )
+
+        metadata = dict(doc.get("metadata") or {})
+        retention = dict(metadata.get("retention_policy") or {})
+        retention["archival_status"] = "ARCHIVED"
+        metadata["retention_policy"] = retention
+        updated = self.repo.update_document(doc["id"], metadata=metadata)
+        return updated or doc
+
+    def apply_retention_lifecycle(self, tenant_id: str, officer_id: str) -> dict[str, int]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        now = datetime.now(timezone.utc)
+        archived = 0
+        expired = 0
+
+        docs = self.repo.list_documents(tenant_id)
+        policy = self.repo.get_tenant_policy(tenant_id)
+        review_sla_days = int(policy.get("review_sla_days", 3))
+
+        for doc in docs:
+            state = DocumentState(doc["state"])
+            created_at = _parse_dt(str(doc.get("created_at", now.isoformat())))
+            expires_at = _parse_dt(str(doc.get("expires_at"))) if doc.get("expires_at") else None
+
+            if state == DocumentState.WAITING_FOR_REVIEW and (now - created_at).days > review_sla_days:
+                self._transition(doc, DocumentState.EXPIRED, "SYSTEM", officer_id, "REVIEW_SLA_EXPIRED")
+                expired += 1
+
+            state = DocumentState(doc["state"])
+            if state in {DocumentState.APPROVED, DocumentState.REJECTED, DocumentState.EXPIRED, DocumentState.FAILED}:
+                if expires_at and now >= expires_at:
+                    self.archive_document(doc["id"], tenant_id, officer_id, "RETENTION_LIFECYCLE")
+                    archived += 1
+
+        return {"archived": archived, "expired": expired}
+
+    def enforce_review_sla(self, tenant_id: str, officer_id: str) -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        policy = self.repo.get_tenant_policy(tenant_id)
+        sla_days = int(policy.get("review_sla_days", 3))
+        step_days = max(1, int(policy.get("escalation_step_days", 1)))
+
+        waiting_docs = self.repo.list_documents_by_state(tenant_id, DocumentState.WAITING_FOR_REVIEW)
+        escalations: list[dict[str, Any]] = []
+
+        now = datetime.now(timezone.utc)
+        for doc in waiting_docs:
+            age_days = (now - _parse_dt(str(doc.get("created_at", now.isoformat())))).days
+            if age_days <= sla_days:
+                continue
+
+            overdue_days = age_days - sla_days
+            level = min(3, 1 + (overdue_days // step_days))
+            assignee_role = "case_worker" if level == 1 else "reviewer" if level == 2 else "admin"
+            reason = f"WAITING_FOR_REVIEW exceeds SLA by {overdue_days} day(s)"
+
+            row = self.repo.create_review_escalation(
+                tenant_id=tenant_id,
+                document_id=doc["id"],
+                escalation_level=level,
+                assignee_role=assignee_role,
+                reason=reason,
+            )
+            escalations.append(row)
+
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="review.escalated",
+                payload={"escalation_level": level, "assignee_role": assignee_role},
+                reason=reason,
+                policy_version=1,
+                model_versions=None,
+            )
+
+        return escalations
+
+    def notify(self, document_id: str, tenant_id: str, officer_id: str) -> dict[str, Any] | None:
+        self._authorize(officer_id, tenant_id, WRITER_ROLES)
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            return None
+
+        message = f"Status update for document {document_id}: {doc.get('state')}"
+        channels = ["PORTAL"]
+        self._event(
+            document_id=document_id,
+            tenant_id=tenant_id,
+            actor_type="SYSTEM",
+            actor_id=officer_id,
+            event_type="notification.sent",
+            payload={"channels": channels, "message": message},
+            reason="MANUAL_NOTIFY",
+            policy_version=1,
+            model_versions=None,
+        )
+        return doc
 
     def list_documents(self, tenant_id: str, officer_id: str) -> list[dict[str, Any]]:
         self._authorize(officer_id, tenant_id, None)
@@ -236,6 +685,14 @@ class DocumentService:
         self._authorize(officer_id, tenant_id, None)
         return self.repo.list_disputes(tenant_id)
 
+    def list_notifications(self, tenant_id: str, officer_id: str, document_id: str | None = None) -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, None)
+        return self.repo.list_notifications(tenant_id, document_id=document_id)
+
+    def list_review_escalations(self, tenant_id: str, officer_id: str, only_open: bool = True) -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        return self.repo.list_review_escalations(tenant_id, only_open=only_open)
+
     def batch_export_documents(self, tenant_id: str, officer_id: str, include_raw_text: bool = False) -> str:
         self._authorize(officer_id, tenant_id, REVIEW_ROLES)
         policy = self.repo.get_tenant_policy(tenant_id)
@@ -246,7 +703,6 @@ class DocumentService:
         if not rows:
             return ""
 
-        # Tenant-only export: filtered at repository by tenant_id.
         columns = [
             "id",
             "tenant_id",
@@ -257,6 +713,7 @@ class DocumentService:
             "confidence",
             "risk_score",
             "template_id",
+            "last_job_id",
             "created_at",
             "updated_at",
             "expires_at",
@@ -270,6 +727,63 @@ class DocumentService:
         for row in rows:
             writer.writerow({k: row.get(k) for k in columns})
         return buffer.getvalue()
+
+    def get_citizen_case_view(self, tenant_id: str, document_id: str, citizen_id: str) -> dict[str, Any]:
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            raise ValueError("Document not found")
+        if doc.get("citizen_id") != citizen_id:
+            raise PermissionError("Citizen cannot access another applicant's document")
+
+        latest_record = self.repo.get_latest_document_record(tenant_id, document_id)
+        record = (latest_record or {}).get("record", {})
+        explanation = (((record or {}).get("document_record") or {}).get("explainability") or {})
+        doc_explanations = explanation.get("document_explanations") or []
+
+        decision = doc.get("decision") or "PENDING"
+        if decision == "REJECT":
+            next_steps = [
+                "Review rejection reasons",
+                "Upload corrected document or visit service center",
+                "Submit dispute if you disagree",
+            ]
+        elif decision == "APPROVE":
+            next_steps = ["No further action required"]
+        else:
+            next_steps = ["Wait for officer review", "Track updates in portal notifications"]
+
+        return {
+            "document_id": document_id,
+            "state": doc.get("state"),
+            "decision": decision,
+            "rejection_reasons": doc_explanations,
+            "explanation_text": self._citizen_explanation(doc),
+            "next_steps": next_steps,
+            "escalation_channels": ["SERVICE_CENTER", "DEPARTMENT_HELPDESK", "PORTAL_DISPUTE"],
+        }
+
+    def emit_custom_event(
+        self,
+        *,
+        document_id: str,
+        tenant_id: str,
+        actor_type: str,
+        actor_id: str | None,
+        event_type: str,
+        payload: dict[str, Any],
+        reason: str,
+    ) -> None:
+        self._event(
+            document_id=document_id,
+            tenant_id=tenant_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            event_type=event_type,
+            payload=payload,
+            reason=reason,
+            policy_version=1,
+            model_versions=None,
+        )
 
     def _authorize(self, officer_id: str, tenant_id: str, allowed_roles: set[str] | None) -> dict[str, Any]:
         row = self.repo.assert_officer_access(officer_id, tenant_id, allowed_roles)
@@ -290,7 +804,6 @@ class DocumentService:
 
         if len(bucket) >= limit:
             raise PermissionError("Tenant API rate limit exceeded")
-
         bucket.append(now)
 
     def _enforce_daily_quota(self, tenant_id: str) -> None:
@@ -303,29 +816,456 @@ class DocumentService:
         if current >= max_per_day:
             raise PermissionError("Tenant daily document quota exceeded")
 
-    def _transition(self, doc: dict[str, Any], target: DocumentState, officer_id: str) -> None:
+    def _transition(
+        self,
+        doc: dict[str, Any],
+        target: DocumentState,
+        actor_type: str,
+        actor_id: str | None,
+        reason: str,
+    ) -> None:
         current = DocumentState(doc["state"])
         nxt = self.sm.transition(current, target)
-        updated = self.repo.update_document(doc["id"], state=nxt)
+        metadata = dict(doc.get("metadata") or {})
+        history = list(metadata.get("state_history") or [])
+        history.append(
+            {
+                "from_state": current.value,
+                "to_state": nxt.value,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "by": actor_type,
+                "reason": reason,
+            }
+        )
+        metadata["state_history"] = history
+
+        updated = self.repo.update_document(doc["id"], state=nxt, metadata=metadata)
         if not updated:
             raise RuntimeError("State update failed")
-
         doc.update(updated)
-        self._event(doc["id"], doc["tenant_id"], officer_id, "document.state.changed", {"from": current.value, "to": target.value})
 
     def _event(
         self,
+        *,
         document_id: str,
         tenant_id: str,
-        officer_id: str | None,
+        actor_type: str,
+        actor_id: str | None,
         event_type: str,
         payload: dict[str, Any],
+        reason: str,
+        policy_version: int,
+        model_versions: dict[str, Any] | None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
     ) -> None:
+        envelope = build_event_envelope(
+            event_type=event_type,
+            tenant_id=tenant_id,
+            document_id=document_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            payload=payload,
+            reason=reason,
+            policy_version=policy_version,
+            model_versions=model_versions,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
         event = DocumentEvent(
             document_id=document_id,
             tenant_id=tenant_id,
-            officer_id=officer_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
             event_type=event_type,
             payload=payload,
+            reason=reason,
+            policy_version=policy_version,
+            model_versions=model_versions,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
         )
         self.repo.add_event(event)
+        self.bus.publish(event_type, envelope)
+
+        notification_result = self.notification_service.handle_event(envelope)
+        if notification_result:
+            self.repo.create_notification(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                citizen_id=notification_result["citizen_id"],
+                channel="AUDIT",
+                event_type="notification.sent",
+                message=notification_result["message"],
+                metadata={"channels": notification_result["channels"]},
+            )
+            if event_type != "notification.sent":
+                self._event(
+                    document_id=document_id,
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=actor_id,
+                    event_type="notification.sent",
+                    payload={
+                        "channels": notification_result["channels"],
+                        "message": notification_result["message"],
+                    },
+                    reason="NOTIFICATION_DISPATCHED",
+                    policy_version=policy_version,
+                    model_versions=model_versions,
+                    correlation_id=correlation_id,
+                    causation_id=event.id,
+                )
+
+    def _build_document_record(self, doc: dict[str, Any], job_id: str, ctx: dict[str, Any]) -> DocumentRecord:
+        document_id = str(doc["id"])
+        tenant_id = str(doc["tenant_id"])
+        metadata = dict(doc.get("metadata") or {})
+
+        ocr_text = str(ctx["ocr_multi_script"].get("ocr_text", ""))
+        lines = [seg.strip() for seg in ocr_text.splitlines() if seg.strip()]
+        if not lines and ocr_text.strip():
+            lines = [ocr_text.strip()]
+
+        ocr_lines: list[OCRLine] = []
+        for idx, text in enumerate(lines, start=1):
+            y0 = min(0.95, 0.05 + (idx * 0.03))
+            words = text.split()
+            word_models: list[OCRWord] = []
+            if words:
+                width = 0.7 / len(words)
+                for w_idx, word in enumerate(words, start=1):
+                    x0 = 0.1 + (w_idx - 1) * width
+                    word_models.append(
+                        OCRWord(
+                            word_id=f"word_{idx}_{w_idx}",
+                            text=word,
+                            confidence=float(ctx["ocr_multi_script"].get("ocr_confidence", 0.9)),
+                            bbox={"page_number": 1, "x_min": x0, "y_min": y0, "x_max": min(0.95, x0 + width * 0.9), "y_max": min(0.99, y0 + 0.02)},
+                            is_uncertain=False,
+                        )
+                    )
+
+            ocr_lines.append(
+                OCRLine(
+                    line_id=f"line_{idx}",
+                    text=text,
+                    confidence=float(ctx["ocr_multi_script"].get("ocr_confidence", 0.9)),
+                    bbox={"page_number": 1, "x_min": 0.1, "y_min": y0, "x_max": 0.85, "y_max": min(0.99, y0 + 0.02)},
+                    words=word_models,
+                )
+            )
+
+        ocr_output = OCROutput(
+            document_id=document_id,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            pages=[
+                OCRPage(
+                    page_number=1,
+                    width_px=2480,
+                    height_px=3508,
+                    script="MIXED",
+                    lines=ocr_lines,
+                )
+            ],
+            preprocessing_metadata=PreprocessingMetadata(
+                steps_applied=["DESKEW", "DENOISE", "CONTRAST_ENHANCEMENT"],
+                original_dpi=200,
+                estimated_quality_score=float(ctx["preprocessing_hashing"].get("quality_score", 0.7)),
+            ),
+            model_metadata=ModelMetadata(model_id="ocr-devanagari-v1", model_version="1.3.0"),
+        )
+
+        classification = ClassificationOutput(
+            document_id=document_id,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            doc_type=str(ctx["template_map"].get("document_type", "UNKNOWN")),
+            doc_subtype="FRONT_SIDE",
+            region_code="DEFAULT",
+            template_id=str(ctx["template_map"].get("template_id", "tpl_unknown")),
+            template_version=str(ctx["template_map"].get("template_version", "2025.1.0")),
+            confidence=float(ctx["classification"].get("confidence", 0.5)),
+            model_metadata=ModelMetadata(model_id="doc-classifier-v2", model_version="2.0.0"),
+            low_confidence=float(ctx["classification"].get("confidence", 0.5)) < 0.7,
+            reasons=list(ctx["decision_explainability"].get("reason_codes", [])),
+        )
+
+        extracted_fields = []
+        for field_name, value in (ctx["field_extract"].get("fields") or {}).items():
+            extracted_fields.append(
+                ExtractedField(
+                    field_name=field_name.upper(),
+                    raw_text=str(value),
+                    normalized_value=str(value),
+                    bbox={"page_number": 1, "x_min": 0.2, "y_min": 0.3, "x_max": 0.8, "y_max": 0.35},
+                    source="OCR",
+                    confidence=float(ctx["field_extract"].get("confidence", 0.6)),
+                    page_number=1,
+                    line_ids=["line_1"],
+                    word_ids=["word_1_1"],
+                    warnings=[],
+                )
+            )
+
+        extraction = ExtractionOutput(
+            document_id=document_id,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            template_id=classification.template_id,
+            template_version=classification.template_version,
+            fields=extracted_fields,
+            model_metadata=ModelMetadata(model_id="layout-extractor-v1", model_version="1.0.2"),
+        )
+
+        field_results = []
+        for item in extraction.fields:
+            field_results.append(
+                FieldValidationResult(
+                    field_name=item.field_name,
+                    status="PASS" if item.confidence >= 0.6 else "WARN",
+                    rule_results=[
+                        RuleResult(
+                            rule_id="RULE_NON_EMPTY",
+                            status="PASS" if item.raw_text else "FAIL",
+                            reason_code="RULE_PASSED" if item.raw_text else "EMPTY",
+                            message="Field has value" if item.raw_text else "Field is empty",
+                        )
+                    ],
+                    ml_checks=[
+                        MLCheckResult(
+                            check_id="FIELD_CONFIDENCE_CHECK",
+                            status="PASS" if item.confidence >= 0.6 else "WARN",
+                            score=float(item.confidence),
+                            reason_code="CONFIDENCE_OK" if item.confidence >= 0.6 else "LOW_CONFIDENCE",
+                            message="Confidence check on extracted field",
+                        )
+                    ],
+                    final_status="PASS" if item.confidence >= 0.6 else "WARN",
+                    final_reason_code="FIELD_VALID" if item.confidence >= 0.6 else "SOFT_VALIDATION_WARNING",
+                )
+            )
+
+        validation = ValidationOutput(
+            document_id=document_id,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            template_id=classification.template_id,
+            template_version=classification.template_version,
+            rule_set_id=str(ctx["validation"].get("rule_set_id", "RULESET_DEFAULT")),
+            field_results=field_results,
+            document_level_results=[],
+            overall_status="PASS" if ctx["validation"].get("is_valid") else "WARN",
+            model_metadata=ValidationModelMetadata(
+                rule_engine_version="1.4.0",
+                ml_validator_model_id="validator-v2",
+                ml_validator_model_version="2.1.0",
+            ),
+        )
+
+        visual_auth = VisualAuthenticityOutput(
+            document_id=document_id,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            template_id=classification.template_id,
+            template_version=classification.template_version,
+            markers=[
+                VisualMarkerResult(
+                    marker_type="STAMP",
+                    marker_name="GOVT_ROUND_SEAL",
+                    expected=True,
+                    detected=bool(ctx["stamps_seals"].get("stamp_present")),
+                    confidence=float(ctx["stamps_seals"].get("authenticity_score", 0.5)),
+                    bbox={"page_number": 1, "x_min": 0.72, "y_min": 0.82, "x_max": 0.88, "y_max": 0.94},
+                    reason_code="STAMP_PRESENT_IN_EXPECTED_REGION" if bool(ctx["stamps_seals"].get("stamp_present")) else "STAMP_NOT_DETECTED",
+                ),
+                VisualMarkerResult(
+                    marker_type="SIGNATURE",
+                    marker_name="ISSUING_OFFICER_SIGNATURE",
+                    expected=True,
+                    detected=bool(ctx["stamps_seals"].get("signature_present")),
+                    confidence=float(ctx["stamps_seals"].get("authenticity_score", 0.5)),
+                    bbox={"page_number": 1, "x_min": 0.60, "y_min": 0.75, "x_max": 0.90, "y_max": 0.82},
+                    reason_code="SIGNATURE_PRESENT" if bool(ctx["stamps_seals"].get("signature_present")) else "SIGNATURE_MISSING",
+                ),
+            ],
+            image_forensics=ImageForensics(
+                tamper_signals=[
+                    {
+                        "signal_id": f"SIG_{sig.upper()}",
+                        "severity": "MEDIUM",
+                        "message": f"Detected {sig} indicator",
+                        "bbox": None,
+                    }
+                    for sig in ctx["tamper_forensics"].get("tamper_indicators", [])
+                ],
+                global_image_score=max(0.0, 1 - float(ctx["tamper_forensics"].get("tamper_risk", 0.2))),
+            ),
+            visual_authenticity_score=float(ctx["stamps_seals"].get("authenticity_score", 0.5)),
+            model_metadata={"stamp_model_id": "stamp-detector-v1", "forensics_model_id": "forensics-v1"},
+        )
+
+        fraud = FraudRiskOutput(
+            document_id=document_id,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            components=FraudRiskComponents(
+                image_forensics_component=FraudComponent(
+                    score=float(ctx["tamper_forensics"].get("tamper_risk", 0.2)),
+                    signals=[str(x) for x in ctx["tamper_forensics"].get("tamper_indicators", [])],
+                ),
+                behavioral_component=FraudComponent(
+                    score=float(ctx["fraud_behavioral_engine"].get("fraud_score", 0.2)),
+                    signals=[f"DUPLICATE_COUNT_{ctx['dedup_cross_submission'].get('duplicate_count', 0)}"],
+                    related_job_ids=[],
+                ),
+                issuer_mismatch_component=FraudComponent(
+                    score=0.1 if ctx["issuer_registry_verification"].get("registry_status") == "MATCHED" else 0.9,
+                    signals=[f"REGISTRY_{ctx['issuer_registry_verification'].get('registry_status', 'UNKNOWN')}"],
+                ),
+            ),
+            aggregate_fraud_risk_score=float(ctx["merge_node"].get("risk_score", 0.5)),
+            risk_level=str(ctx["merge_node"].get("risk_level", "MEDIUM")),
+            disclaimer="System flags risk; final decision lies with human officers and policies.",
+            model_metadata={"fraud_model_id": "fraud-aggregator-v1", "fraud_model_version": "1.0.0"},
+        )
+
+        fields_compared: list[FieldComparison] = []
+        for field in extraction.fields[:5]:
+            fields_compared.append(
+                FieldComparison(
+                    field_name=field.field_name,
+                    local_value=field.normalized_value,
+                    issuer_value=field.normalized_value if ctx["issuer_registry_verification"].get("registry_status") == "MATCHED" else None,
+                    match=ctx["issuer_registry_verification"].get("registry_status") == "MATCHED",
+                )
+            )
+
+        issuer = IssuerVerificationOutput(
+            document_id=document_id,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            doc_type=classification.doc_type,
+            issuer_name=str((ctx["field_extract"].get("fields") or {}).get("issuer", "UNKNOWN_ISSUER")),
+            verification_method="REGISTRY_API" if ctx["issuer_registry_verification"].get("registry_status") != "NOT_CHECKED" else "NOT_AVAILABLE",
+            status="CONFIRMED" if ctx["issuer_registry_verification"].get("registry_status") == "MATCHED" else "MISMATCH",
+            issuer_reference_id=f"REG-{document_id[:8]}",
+            fields_compared=fields_compared,
+            issuer_authenticity_score=float(ctx["issuer_registry_verification"].get("registry_confidence", 0.3)),
+            response_metadata=IssuerResponseMetadata(
+                registry_request_id=f"req-{job_id[:8]}",
+                response_time_ms=320,
+                error_code=None,
+            ),
+        )
+
+        state_history = [StateHistoryEvent(**ev) for ev in list((metadata.get("state_history") or []))]
+
+        notifications = self.repo.list_notifications(tenant_id, document_id=document_id)
+        comm_events = [
+            CitizenCommEvent(
+                event_type="NOTIFICATION_SENT",
+                channel=str(n.get("channel", "PORTAL")),
+                message_template_id=str(n.get("event_type", "UNKNOWN")),
+                sent_at=str(n.get("sent_at", n.get("created_at", datetime.now(timezone.utc).isoformat()))),
+            )
+            for n in notifications
+        ]
+
+        explainability = ExplainabilityRecord(
+            field_explanations=[
+                {
+                    "field_name": field.field_name,
+                    "messages": [f"Field extracted with confidence {field.confidence:.2f}"],
+                    "reason_codes": ["EXTRACTED_FROM_EXPECTED_REGION"],
+                }
+                for field in extraction.fields
+            ],
+            document_explanations=[
+                {
+                    "reason_code": code,
+                    "message": f"Pipeline reason: {code}",
+                }
+                for code in ctx["decision_explainability"].get("reason_codes", [])
+            ],
+        )
+
+        retention = dict(metadata.get("retention_policy") or {})
+
+        return DocumentRecord(
+            document_id=document_id,
+            job_id=job_id,
+            tenant_id=tenant_id,
+            ingestion=IngestionRecord(
+                **dict(metadata.get("ingestion") or {
+                    "source": "ONLINE_PORTAL",
+                    "submitted_by": {"actor_type": "SYSTEM", "actor_id": "system"},
+                    "received_at": doc.get("created_at"),
+                    "original_file_uri": None,
+                    "perceptual_hash": hashlib.sha256(str(doc.get("raw_text", "")).encode("utf-8")).hexdigest(),
+                    "dedup_matches": [],
+                })
+            ),
+            state_machine=StateMachineRecord(current_state=str(doc.get("state")), history=state_history),
+            ocr_output=ocr_output,
+            classification_output=classification,
+            template_definition_ref=TemplateReference(template_id=classification.template_id, template_version=classification.template_version),
+            extraction_output=extraction,
+            validation_output=validation,
+            visual_authenticity_output=visual_auth,
+            fraud_risk_output=fraud,
+            issuer_verification_output=issuer,
+            explainability=explainability,
+            scores=ScoreRecord(
+                validation_status=validation.overall_status,
+                visual_authenticity_score=visual_auth.visual_authenticity_score,
+                issuer_authenticity_score=issuer.issuer_authenticity_score,
+                aggregate_fraud_risk_score=fraud.aggregate_fraud_risk_score,
+            ),
+            human_review=HumanReviewRecord(**dict(metadata.get("human_review") or {})),
+            citizen_communication=CitizenCommunicationRecord(
+                preferred_channels=list((metadata.get("citizen_communication") or {}).get("preferred_channels", ["SMS", "PORTAL"])),
+                events=comm_events,
+            ),
+            offline_metadata=OfflineMetadataRecord(**dict(metadata.get("offline_metadata") or {})),
+            ml_training_flags=MLTrainingFlagsRecord(**dict(metadata.get("ml_training_flags") or {})),
+            retention_policy=RetentionPolicyRecord(
+                policy_id=str(retention.get("policy_id", f"TENANT_{tenant_id}_DOC_RETAIN_DEFAULT")),
+                retention_until=str(retention.get("retention_until", doc.get("expires_at", datetime.now(timezone.utc).isoformat()))),
+                archival_status=str(retention.get("archival_status", "ACTIVE")),
+            ),
+        )
+
+    def _append_human_review_event(self, doc: dict[str, Any], review_event: HumanReviewEvent) -> None:
+        metadata = dict(doc.get("metadata") or {})
+        human_review = dict(metadata.get("human_review") or {"review_events": []})
+        review_events = list(human_review.get("review_events") or [])
+        review_events.append(asdict(review_event))
+        human_review["review_events"] = review_events
+        metadata["human_review"] = human_review
+        updated = self.repo.update_document(doc["id"], metadata=metadata)
+        if updated:
+            doc.update(updated)
+
+    def _citizen_explanation(self, doc: dict[str, Any]) -> str:
+        decision = str(doc.get("decision") or "PENDING")
+        state = str(doc.get("state") or "UNKNOWN")
+        if decision == "REJECT":
+            return "Document rejected after centralized verification. Please review reasons and submit dispute if needed."
+        if decision == "APPROVE":
+            return "Document approved after centralized verification checks."
+        if state == DocumentState.WAITING_FOR_REVIEW.value:
+            return "Document is queued for officer review."
+        if state == DocumentState.REVIEW_IN_PROGRESS.value:
+            return "Document is currently being reviewed by an officer."
+        return "Document is under processing."
+
+
+def _parse_dt(value: str) -> datetime:
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except Exception:
+        return datetime.now(timezone.utc)

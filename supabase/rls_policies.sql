@@ -6,7 +6,6 @@
 
 begin;
 
--- Membership model used by RLS predicates.
 create table if not exists public.tenant_memberships (
     user_id uuid not null references auth.users(id) on delete cascade,
     tenant_id text not null references public.tenants(tenant_id) on delete cascade,
@@ -23,6 +22,7 @@ create unique index if not exists uq_tenant_memberships_one_active_per_user
 
 alter table public.tenant_memberships enable row level security;
 
+-- Membership visibility: own memberships only.
 drop policy if exists tm_select_own on public.tenant_memberships;
 create policy tm_select_own
 on public.tenant_memberships
@@ -30,12 +30,11 @@ for select
 to authenticated
 using (user_id = auth.uid());
 
--- No direct client writes to membership bindings.
 revoke all on table public.tenant_memberships from anon;
 revoke all on table public.tenant_memberships from authenticated;
 grant select on table public.tenant_memberships to authenticated;
 
--- Helper functions.
+-- Helper functions
 create or replace function public.is_tenant_member(p_tenant_id text)
 returns boolean
 language sql
@@ -79,8 +78,7 @@ as $$
     select exists (
         select 1
         from public.tenant_storage_buckets b
-        join public.tenant_memberships tm
-          on tm.tenant_id = b.tenant_id
+        join public.tenant_memberships tm on tm.tenant_id = b.tenant_id
         where tm.user_id = auth.uid()
           and tm.status = 'ACTIVE'
           and b.is_active = true
@@ -95,7 +93,7 @@ grant execute on function public.is_tenant_member(text) to authenticated;
 grant execute on function public.has_tenant_role(text, text[]) to authenticated;
 grant execute on function public.member_can_access_bucket(text) to authenticated;
 
--- Enable RLS on core tables.
+-- Enable RLS on all tenancy-governed tables
 alter table public.tenants enable row level security;
 alter table public.officers enable row level security;
 alter table public.tenant_policies enable row level security;
@@ -106,16 +104,19 @@ alter table public.tenant_api_keys enable row level security;
 alter table public.documents enable row level security;
 alter table public.document_events enable row level security;
 alter table public.disputes enable row level security;
+alter table public.citizen_notifications enable row level security;
+alter table public.review_escalations enable row level security;
+alter table public.document_records enable row level security;
 
--- tenants policies.
-drop policy if exists tenants_select_tenant on public.tenants;
+-- tenants
+ drop policy if exists tenants_select_tenant on public.tenants;
 create policy tenants_select_tenant
 on public.tenants
 for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
-drop policy if exists tenants_update_admin on public.tenants;
+ drop policy if exists tenants_update_admin on public.tenants;
 create policy tenants_update_admin
 on public.tenants
 for update
@@ -123,15 +124,15 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']))
 with check (public.has_tenant_role(tenant_id, array['admin']));
 
--- officers policies.
-drop policy if exists officers_select_tenant on public.officers;
+-- officers
+ drop policy if exists officers_select_tenant on public.officers;
 create policy officers_select_tenant
 on public.officers
 for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
-drop policy if exists officers_write_admin on public.officers;
+ drop policy if exists officers_write_admin on public.officers;
 create policy officers_write_admin
 on public.officers
 for all
@@ -139,15 +140,15 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']))
 with check (public.has_tenant_role(tenant_id, array['admin']));
 
--- tenant policy/rules/template scopes.
-drop policy if exists tenant_policies_select_tenant on public.tenant_policies;
+-- tenant policies/templates/rules/storage/api keys
+ drop policy if exists tenant_policies_select_tenant on public.tenant_policies;
 create policy tenant_policies_select_tenant
 on public.tenant_policies
 for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
-drop policy if exists tenant_policies_write_admin on public.tenant_policies;
+ drop policy if exists tenant_policies_write_admin on public.tenant_policies;
 create policy tenant_policies_write_admin
 on public.tenant_policies
 for all
@@ -155,14 +156,14 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']))
 with check (public.has_tenant_role(tenant_id, array['admin']));
 
-drop policy if exists tenant_templates_select_tenant on public.tenant_templates;
+ drop policy if exists tenant_templates_select_tenant on public.tenant_templates;
 create policy tenant_templates_select_tenant
 on public.tenant_templates
 for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
-drop policy if exists tenant_templates_write_admin on public.tenant_templates;
+ drop policy if exists tenant_templates_write_admin on public.tenant_templates;
 create policy tenant_templates_write_admin
 on public.tenant_templates
 for all
@@ -170,14 +171,14 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']))
 with check (public.has_tenant_role(tenant_id, array['admin']));
 
-drop policy if exists tenant_rules_select_tenant on public.tenant_rules;
+ drop policy if exists tenant_rules_select_tenant on public.tenant_rules;
 create policy tenant_rules_select_tenant
 on public.tenant_rules
 for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
-drop policy if exists tenant_rules_write_admin on public.tenant_rules;
+ drop policy if exists tenant_rules_write_admin on public.tenant_rules;
 create policy tenant_rules_write_admin
 on public.tenant_rules
 for all
@@ -185,14 +186,14 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']))
 with check (public.has_tenant_role(tenant_id, array['admin']));
 
-drop policy if exists tenant_storage_buckets_select_tenant on public.tenant_storage_buckets;
+ drop policy if exists tenant_storage_buckets_select_tenant on public.tenant_storage_buckets;
 create policy tenant_storage_buckets_select_tenant
 on public.tenant_storage_buckets
 for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
-drop policy if exists tenant_storage_buckets_write_admin on public.tenant_storage_buckets;
+ drop policy if exists tenant_storage_buckets_write_admin on public.tenant_storage_buckets;
 create policy tenant_storage_buckets_write_admin
 on public.tenant_storage_buckets
 for all
@@ -200,14 +201,14 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']))
 with check (public.has_tenant_role(tenant_id, array['admin']));
 
-drop policy if exists tenant_api_keys_select_admin on public.tenant_api_keys;
+ drop policy if exists tenant_api_keys_select_admin on public.tenant_api_keys;
 create policy tenant_api_keys_select_admin
 on public.tenant_api_keys
 for select
 to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']));
 
-drop policy if exists tenant_api_keys_write_admin on public.tenant_api_keys;
+ drop policy if exists tenant_api_keys_write_admin on public.tenant_api_keys;
 create policy tenant_api_keys_write_admin
 on public.tenant_api_keys
 for all
@@ -215,22 +216,22 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']))
 with check (public.has_tenant_role(tenant_id, array['admin']));
 
--- documents policies.
-drop policy if exists documents_select_tenant on public.documents;
+-- documents/events/disputes
+ drop policy if exists documents_select_tenant on public.documents;
 create policy documents_select_tenant
 on public.documents
 for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
-drop policy if exists documents_insert_tenant_writer on public.documents;
+ drop policy if exists documents_insert_tenant_writer on public.documents;
 create policy documents_insert_tenant_writer
 on public.documents
 for insert
 to authenticated
 with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']));
 
-drop policy if exists documents_update_tenant_writer on public.documents;
+ drop policy if exists documents_update_tenant_writer on public.documents;
 create policy documents_update_tenant_writer
 on public.documents
 for update
@@ -238,15 +239,14 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']))
 with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']));
 
-drop policy if exists documents_delete_tenant_admin on public.documents;
+ drop policy if exists documents_delete_tenant_admin on public.documents;
 create policy documents_delete_tenant_admin
 on public.documents
 for delete
 to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']));
 
--- document events policies.
-drop policy if exists document_events_select_tenant on public.document_events;
+ drop policy if exists document_events_select_tenant on public.document_events;
 create policy document_events_select_tenant
 on public.document_events
 for select
@@ -254,14 +254,13 @@ to authenticated
 using (
     public.is_tenant_member(tenant_id)
     and exists (
-        select 1
-        from public.documents d
+        select 1 from public.documents d
         where d.id = document_events.document_id
           and d.tenant_id = document_events.tenant_id
     )
 );
 
-drop policy if exists document_events_insert_tenant_writer on public.document_events;
+ drop policy if exists document_events_insert_tenant_writer on public.document_events;
 create policy document_events_insert_tenant_writer
 on public.document_events
 for insert
@@ -269,17 +268,13 @@ to authenticated
 with check (
     public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin'])
     and exists (
-        select 1
-        from public.documents d
+        select 1 from public.documents d
         where d.id = document_events.document_id
           and d.tenant_id = document_events.tenant_id
     )
 );
 
--- No update/delete policies for document_events => denied.
-
--- disputes policies.
-drop policy if exists disputes_select_tenant on public.disputes;
+ drop policy if exists disputes_select_tenant on public.disputes;
 create policy disputes_select_tenant
 on public.disputes
 for select
@@ -287,14 +282,13 @@ to authenticated
 using (
     public.is_tenant_member(tenant_id)
     and exists (
-        select 1
-        from public.documents d
+        select 1 from public.documents d
         where d.id = disputes.document_id
           and d.tenant_id = disputes.tenant_id
     )
 );
 
-drop policy if exists disputes_insert_tenant_writer on public.disputes;
+ drop policy if exists disputes_insert_tenant_writer on public.disputes;
 create policy disputes_insert_tenant_writer
 on public.disputes
 for insert
@@ -302,14 +296,13 @@ to authenticated
 with check (
     public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin'])
     and exists (
-        select 1
-        from public.documents d
+        select 1 from public.documents d
         where d.id = disputes.document_id
           and d.tenant_id = disputes.tenant_id
     )
 );
 
-drop policy if exists disputes_update_tenant_reviewer on public.disputes;
+ drop policy if exists disputes_update_tenant_reviewer on public.disputes;
 create policy disputes_update_tenant_reviewer
 on public.disputes
 for update
@@ -317,14 +310,59 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['reviewer', 'admin']))
 with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin']));
 
-drop policy if exists disputes_delete_tenant_admin on public.disputes;
+ drop policy if exists disputes_delete_tenant_admin on public.disputes;
 create policy disputes_delete_tenant_admin
 on public.disputes
 for delete
 to authenticated
 using (public.has_tenant_role(tenant_id, array['admin']));
 
--- Explicit grants.
+-- notifications / escalations / document record
+ drop policy if exists citizen_notifications_select_tenant on public.citizen_notifications;
+create policy citizen_notifications_select_tenant
+on public.citizen_notifications
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists citizen_notifications_insert_writer on public.citizen_notifications;
+create policy citizen_notifications_insert_writer
+on public.citizen_notifications
+for insert
+to authenticated
+with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']));
+
+ drop policy if exists review_escalations_select_tenant on public.review_escalations;
+create policy review_escalations_select_tenant
+on public.review_escalations
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists review_escalations_write_reviewer on public.review_escalations;
+create policy review_escalations_write_reviewer
+on public.review_escalations
+for all
+to authenticated
+using (public.has_tenant_role(tenant_id, array['reviewer', 'admin']))
+with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin']));
+
+ drop policy if exists document_records_select_tenant on public.document_records;
+create policy document_records_select_tenant
+on public.document_records
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists document_records_write_writer on public.document_records;
+create policy document_records_write_writer
+on public.document_records
+for all
+to authenticated
+using (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']))
+with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']));
+
+-- Grants
 revoke all on table public.tenants from anon;
 revoke all on table public.officers from anon;
 revoke all on table public.tenant_policies from anon;
@@ -335,6 +373,9 @@ revoke all on table public.tenant_api_keys from anon;
 revoke all on table public.documents from anon;
 revoke all on table public.document_events from anon;
 revoke all on table public.disputes from anon;
+revoke all on table public.citizen_notifications from anon;
+revoke all on table public.review_escalations from anon;
+revoke all on table public.document_records from anon;
 
 revoke all on table public.tenants from authenticated;
 revoke all on table public.officers from authenticated;
@@ -346,6 +387,9 @@ revoke all on table public.tenant_api_keys from authenticated;
 revoke all on table public.documents from authenticated;
 revoke all on table public.document_events from authenticated;
 revoke all on table public.disputes from authenticated;
+revoke all on table public.citizen_notifications from authenticated;
+revoke all on table public.review_escalations from authenticated;
+revoke all on table public.document_records from authenticated;
 
 grant select on table public.tenants to authenticated;
 grant select, insert, update, delete on table public.officers to authenticated;
@@ -357,9 +401,12 @@ grant select, insert, update, delete on table public.tenant_api_keys to authenti
 grant select, insert, update, delete on table public.documents to authenticated;
 grant select, insert on table public.document_events to authenticated;
 grant select, insert, update, delete on table public.disputes to authenticated;
+grant select, insert on table public.citizen_notifications to authenticated;
+grant select, insert, update, delete on table public.review_escalations to authenticated;
+grant select, insert, update, delete on table public.document_records to authenticated;
 
--- Storage object tenant bucket isolation (safe even if storage policies already exist).
-do $$
+-- Storage bucket isolation
+ do $$
 begin
     begin
         execute 'drop policy if exists storage_objects_tenant_select on storage.objects';

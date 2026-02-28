@@ -29,6 +29,9 @@ class MemoryStore:
     tenant_templates: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     tenant_rules: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     tenant_api_keys: list[dict[str, Any]] = []
+    notifications: list[dict[str, Any]] = []
+    review_escalations: list[dict[str, Any]] = []
+    document_records: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def _now() -> str:
@@ -37,8 +40,7 @@ def _now() -> str:
 
 def _today_start_iso() -> str:
     now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.isoformat()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
 
 def _hash_key(raw: str) -> str:
@@ -80,6 +82,12 @@ class Repository:
             "max_documents_per_day": policy.max_documents_per_day,
             "cross_tenant_fraud_enabled": policy.cross_tenant_fraud_enabled,
             "export_enabled": policy.export_enabled,
+            "sms_enabled": policy.sms_enabled,
+            "email_enabled": policy.email_enabled,
+            "portal_enabled": policy.portal_enabled,
+            "whatsapp_enabled": policy.whatsapp_enabled,
+            "review_sla_days": policy.review_sla_days,
+            "escalation_step_days": policy.escalation_step_days,
             "residency_region": policy.residency_region,
             "created_at": policy.created_at,
             "updated_at": policy.updated_at,
@@ -91,6 +99,7 @@ class Repository:
             "tenant_id": tenant_id,
             "document_type": dtype,
             "template_id": f"tpl_{dtype.lower()}",
+            "template_version": "2025.1.0",
             "version": 1,
             "is_active": True,
             "config": {},
@@ -103,6 +112,7 @@ class Repository:
             "tenant_id": tenant_id,
             "document_type": dtype,
             "rule_name": f"rule_{dtype.lower()}",
+            "rule_set_id": f"RULESET_{dtype}_DEFAULT",
             "version": 1,
             "is_active": True,
             "min_extract_confidence": 0.6,
@@ -188,6 +198,21 @@ class Repository:
         rows = [r for r in MemoryStore.documents.values() if r.get("tenant_id") == tenant_id]
         return sorted(rows, key=lambda x: x["created_at"], reverse=True)
 
+    def list_documents_by_state(self, tenant_id: str, state: DocumentState) -> list[dict[str, Any]]:
+        if self.client:
+            result = exec_query(
+                self.client.table("documents")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("state", state.value)
+                .order("created_at", desc=False)
+            )
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.documents.values() if r.get("tenant_id") == tenant_id and r.get("state") == state.value]
+        return sorted(rows, key=lambda x: x["created_at"])
+
     def count_documents_created_today(self, tenant_id: str) -> int:
         start_iso = _today_start_iso()
         if self.client:
@@ -259,9 +284,15 @@ class Repository:
             "id": event.id,
             "document_id": event.document_id,
             "tenant_id": event.tenant_id,
-            "officer_id": event.officer_id,
+            "actor_type": event.actor_type,
+            "actor_id": event.actor_id,
             "event_type": event.event_type,
             "payload": event.payload,
+            "reason": event.reason,
+            "policy_version": event.policy_version,
+            "model_versions": event.model_versions or {},
+            "correlation_id": event.correlation_id,
+            "causation_id": event.causation_id,
             "created_at": event.created_at,
         }
         if self.client:
@@ -286,7 +317,9 @@ class Repository:
                 query = query.eq("tenant_id", tenant_id)
             result = exec_query(query)
             if result and result.get("data") is not None:
-                return result["data"]
+                data = result["data"]
+                if data:
+                    return data
 
         rows = MemoryStore.events.get(document_id, [])
         if tenant_id:
@@ -302,7 +335,9 @@ class Repository:
                 .order("created_at", desc=False)
             )
             if result and result.get("data") is not None:
-                return result["data"]
+                data = result["data"]
+                if data:
+                    return data
 
         rows: list[dict[str, Any]] = []
         for doc_events in MemoryStore.events.values():
@@ -344,6 +379,139 @@ class Repository:
         for items in MemoryStore.disputes.values():
             rows.extend([it for it in items if it.get("tenant_id") == tenant_id])
         return sorted(rows, key=lambda x: x["created_at"], reverse=True)
+
+    def create_notification(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        citizen_id: str,
+        channel: str,
+        event_type: str,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "tenant_id": tenant_id,
+            "document_id": document_id,
+            "citizen_id": citizen_id,
+            "channel": channel,
+            "event_type": event_type,
+            "message": message,
+            "status": "SENT",
+            "metadata": metadata or {},
+            "created_at": _now(),
+            "sent_at": _now(),
+        }
+        if self.client:
+            result = exec_query(self.client.table("citizen_notifications").insert(row))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.notifications.append(row)
+        return row
+
+    def list_notifications(self, tenant_id: str, document_id: str | None = None) -> list[dict[str, Any]]:
+        if self.client:
+            query = self.client.table("citizen_notifications").select("*").eq("tenant_id", tenant_id).order("created_at", desc=False)
+            if document_id:
+                query = query.eq("document_id", document_id)
+            result = exec_query(query)
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [n for n in MemoryStore.notifications if n.get("tenant_id") == tenant_id]
+        if document_id:
+            rows = [n for n in rows if n.get("document_id") == document_id]
+        return rows
+
+    def create_review_escalation(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        escalation_level: int,
+        assignee_role: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        row = {
+            "tenant_id": tenant_id,
+            "document_id": document_id,
+            "escalation_level": escalation_level,
+            "assignee_role": assignee_role,
+            "reason": reason,
+            "status": "OPEN",
+            "created_at": _now(),
+            "resolved_at": None,
+        }
+
+        if self.client:
+            result = exec_query(self.client.table("review_escalations").insert(row))
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.review_escalations.append(row)
+        return row
+
+    def list_review_escalations(self, tenant_id: str, only_open: bool = True) -> list[dict[str, Any]]:
+        if self.client:
+            query = self.client.table("review_escalations").select("*").eq("tenant_id", tenant_id).order("created_at", desc=False)
+            if only_open:
+                query = query.eq("status", "OPEN")
+            result = exec_query(query)
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.review_escalations if r.get("tenant_id") == tenant_id]
+        if only_open:
+            rows = [r for r in rows if r.get("status") == "OPEN"]
+        return rows
+
+    def save_document_record(self, tenant_id: str, document_id: str, job_id: str, schema_version: str, record: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "tenant_id": tenant_id,
+            "document_id": document_id,
+            "job_id": job_id,
+            "schema_version": schema_version,
+            "record": record,
+            "created_at": _now(),
+        }
+        if self.client:
+            exec_query(self.client.table("document_records").upsert(row, on_conflict="document_id,job_id"))
+            result = exec_query(
+                self.client.table("document_records")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("document_id", document_id)
+                .eq("job_id", job_id)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        MemoryStore.document_records[(document_id, job_id)] = row
+        return row
+
+    def get_latest_document_record(self, tenant_id: str, document_id: str) -> dict[str, Any] | None:
+        if self.client:
+            result = exec_query(
+                self.client.table("document_records")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("document_id", document_id)
+                .order("created_at", desc=True)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                rows = result["data"]
+                return rows[0] if rows else None
+
+        rows = [v for (doc_id, _job), v in MemoryStore.document_records.items() if doc_id == document_id and v.get("tenant_id") == tenant_id]
+        rows = sorted(rows, key=lambda x: x.get("created_at", ""), reverse=True)
+        return rows[0] if rows else None
 
     def export_documents_for_tenant(self, tenant_id: str, include_raw_text: bool = False) -> list[dict[str, Any]]:
         docs = self.list_documents(tenant_id)
@@ -408,6 +576,7 @@ class Repository:
                 rows = result["data"]
                 if rows:
                     return rows[0]
+
             if create_if_missing:
                 default = self._default_policy(tenant_id)
                 exec_query(self.client.table("tenant_policies").insert(default))
@@ -436,13 +605,17 @@ class Repository:
             if result and result.get("data"):
                 rows = result["data"]
                 if rows:
+                    if "template_version" not in rows[0]:
+                        rows[0]["template_version"] = "2025.1.0"
                     return rows[0]
 
         key = (tenant_id, dtype)
         rows = MemoryStore.tenant_templates.get(key, [])
         active = [r for r in rows if r.get("is_active")]
         if active:
-            return sorted(active, key=lambda x: x.get("version", 1), reverse=True)[0]
+            row = sorted(active, key=lambda x: x.get("version", 1), reverse=True)[0]
+            row.setdefault("template_version", "2025.1.0")
+            return row
 
         return self._default_template(tenant_id, dtype)
 
@@ -461,13 +634,16 @@ class Repository:
             if result and result.get("data"):
                 rows = result["data"]
                 if rows:
+                    rows[0].setdefault("rule_set_id", f"RULESET_{dtype}_DEFAULT")
                     return rows[0]
 
         key = (tenant_id, dtype)
         rows = MemoryStore.tenant_rules.get(key, [])
         active = [r for r in rows if r.get("is_active")]
         if active:
-            return sorted(active, key=lambda x: x.get("version", 1), reverse=True)[0]
+            row = sorted(active, key=lambda x: x.get("version", 1), reverse=True)[0]
+            row.setdefault("rule_set_id", f"RULESET_{dtype}_DEFAULT")
+            return row
 
         return self._default_rule(tenant_id, dtype)
 

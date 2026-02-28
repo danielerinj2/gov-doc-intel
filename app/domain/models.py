@@ -35,9 +35,15 @@ class Document:
 class DocumentEvent:
     document_id: str
     tenant_id: str
-    officer_id: str | None
+    actor_type: str
+    actor_id: str | None
     event_type: str
     payload: dict[str, Any]
+    reason: str | None = None
+    policy_version: int | None = None
+    model_versions: dict[str, Any] | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
     id: str = field(default_factory=lambda: str(uuid4()))
     created_at: str = field(default_factory=utc_now)
 
@@ -61,6 +67,12 @@ class TenantPolicy:
     max_documents_per_day: int = 25000
     cross_tenant_fraud_enabled: bool = False
     export_enabled: bool = True
+    sms_enabled: bool = True
+    email_enabled: bool = True
+    portal_enabled: bool = True
+    whatsapp_enabled: bool = False
+    review_sla_days: int = 3
+    escalation_step_days: int = 1
     residency_region: str = "default"
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -73,3 +85,15 @@ class Officer:
     role: str
     status: str = "ACTIVE"
     created_at: str = field(default_factory=utc_now)
+
+
+@dataclass
+class HumanReviewEvent:
+    officer_id: str
+    action: str
+    reason: str
+    at: str
+    field_name: str | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    decision: str | None = None
