@@ -52,10 +52,10 @@ from app.contracts.schemas import (
 from app.domain.models import Dispute, Document, DocumentEvent, HumanReviewEvent, Officer
 from app.domain.state_machine import StateMachine
 from app.domain.states import DocumentState
-from app.events.bus import InMemoryEventBus
+from app.events.backends import build_event_bus
 from app.events.contracts import BRANCH_MODULES, build_event_envelope
 from app.infra.groq_adapter import GroqAdapter
-from app.infra.repositories import REVIEW_ROLES, WRITER_ROLES, Repository
+from app.infra.repositories import ADMIN_ROLES, REVIEW_ROLES, WRITER_ROLES, Repository
 from app.pipeline.dag import DAG, Node
 from app.pipeline.level2_modules import (
     ExplainabilityAuditModule,
@@ -75,7 +75,7 @@ class DocumentService:
         self.repo = Repository()
         self.sm = StateMachine()
         self.nodes = PipelineNodes(GroqAdapter())
-        self.bus = InMemoryEventBus()
+        self.bus = build_event_bus()
         self.notification_service = NotificationService(self.repo)
         self.dr_service = DRService()
         self.explainability_audit_module = ExplainabilityAuditModule()
@@ -107,6 +107,10 @@ class DocumentService:
         row = self.repo.upsert_officer(officer)
         self.repo.get_tenant_policy(tenant_id, create_if_missing=True)
         return row
+
+    def create_tenant_api_key(self, tenant_id: str, officer_id: str, key_label: str, raw_key: str) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, ADMIN_ROLES)
+        return self.repo.create_tenant_api_key(tenant_id, key_label, raw_key)
 
     def create_document(
         self,
@@ -234,6 +238,7 @@ class DocumentService:
             ctx = self.dag.run(
                 {
                     "raw_text": doc.get("raw_text", ""),
+                    "source_path": ((doc.get("metadata") or {}).get("ingestion") or {}).get("original_file_uri"),
                     "tenant_id": tenant_id,
                     "document_id": doc["id"],
                     "repo": self.repo,

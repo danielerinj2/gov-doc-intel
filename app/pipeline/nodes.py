@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.infra.authenticity_adapter import AuthenticityAdapter
+from app.infra.fraud_adapter import FraudCalibrationAdapter
 from app.infra.groq_adapter import GroqAdapter
+from app.infra.issuer_registry_adapter import IssuerRegistryAdapter
+from app.infra.ocr_adapter import OCRAdapter
 from app.pipeline.level2_modules import (
     DocumentClassificationModule,
     ExplainabilityAuditModule,
@@ -19,19 +23,20 @@ from app.pipeline.level2_modules import (
 class PipelineNodes:
     def __init__(self, groq: GroqAdapter) -> None:
         self.groq = groq
-        self.ocr_module = OCRPreprocessingModule()
+        self.ocr_module = OCRPreprocessingModule(ocr_adapter=OCRAdapter())
         self.classifier_module = DocumentClassificationModule()
         self.template_module = TemplatePolicyRuleEngineModule()
         self.extractor_module = FieldExtractionModule()
         self.validation_module = ValidationModule()
-        self.visual_module = VisualAuthenticityModule()
-        self.fraud_module = FraudRiskEngineModule()
-        self.issuer_module = IssuerRegistryVerificationModule()
+        self.visual_module = VisualAuthenticityModule(adapter=AuthenticityAdapter())
+        self.fraud_module = FraudRiskEngineModule(calibrator=FraudCalibrationAdapter())
+        self.issuer_module = IssuerRegistryVerificationModule(registry_adapter=IssuerRegistryAdapter())
         self.explainability_module = ExplainabilityAuditModule()
 
     def preprocessing_hashing(self, ctx: dict[str, Any]) -> dict[str, Any]:
         text = str(ctx.get("raw_text") or "")
-        return self.ocr_module.preprocess(text)
+        source_path = ctx.get("source_path")
+        return self.ocr_module.preprocess(text, source_path=str(source_path) if source_path else None)
 
     def ocr_multi_script(self, ctx: dict[str, Any]) -> dict[str, Any]:
         return self.ocr_module.ocr(ctx["preprocessing_hashing"])
@@ -99,6 +104,7 @@ class PipelineNodes:
 
     def issuer_registry_verification(self, ctx: dict[str, Any]) -> dict[str, Any]:
         return self.issuer_module.verify(
+            tenant_id=str(ctx.get("tenant_id", "")),
             extraction_out=ctx["field_extract"],
             classification_out=ctx["classification"],
         )

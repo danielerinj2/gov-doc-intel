@@ -25,6 +25,17 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
    pip install -r requirements.txt
    ```
 2. Configure `.env` using `.env.example`.
+   - For Streamlit Cloud, use `Secrets` TOML format:
+     ```toml
+     SUPABASE_URL="https://<project-ref>.supabase.co"
+     SUPABASE_SERVICE_KEY="..."
+     SUPABASE_ANON_KEY="..."
+     GROQ_API_KEY="..."
+     GROQ_MODEL="llama-3.1-70b-versatile"
+     GROQ_USER_AGENT="Mozilla/5.0 ..."
+     APP_ENV="prod"
+     ```
+   - Do not use `.env` style with spaces around `=` in Streamlit Secrets.
 3. Apply SQL schema in Supabase SQL editor:
    - `supabase/schema.sql`
    - `supabase/rls_policies.sql` (for publishable-key + authenticated JWT access)
@@ -35,6 +46,10 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
 4. Run app:
    ```bash
    streamlit run streamlit_app.py
+   ```
+5. Optional: run API service (for integrations/webhooks/offline workers):
+   ```bash
+   uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
 ## Important Supabase fix
@@ -87,7 +102,7 @@ Every transition is persisted with actor, reason, policy version, model versions
 ## Event-Driven Contracts
 Event contracts and validation are in:
 - `app/events/contracts.py`
-- `app/events/bus.py`
+- `app/events/backends.py`
 
 Implemented core events:
 - `document.received`
@@ -198,3 +213,59 @@ If app status shows `PART5_SCHEMA_READY=false`, apply:
 ```bash
 ./scripts/debug_groq.py
 ```
+
+## External API Surface (FastAPI)
+- Entry point: `app/api/main.py`
+- Required headers for tenant-safe access:
+  - `X-Tenant-ID`
+  - `X-Officer-ID`
+  - `X-API-Key` (optional but recommended for app-to-app calls)
+- Core endpoints:
+  - `POST /documents`
+  - `POST /documents/{document_id}/process`
+  - `GET /documents/{document_id}/status`
+  - `GET /documents/{document_id}/result`
+  - `GET /documents/{document_id}/events`
+  - `POST /documents/{document_id}/review/start`
+  - `POST /documents/{document_id}/review/decision`
+  - `POST /documents/{document_id}/dispute`
+  - `GET /tenants/{tenant_id}/dashboard`
+  - `GET /tenants/{tenant_id}/governance`
+  - `GET /tenants/{tenant_id}/kpis`
+  - `POST /tenants/{tenant_id}/offline/sync`
+  - `POST /tenants/{tenant_id}/api-keys`
+
+## Offline Worker (Rate-Controlled Sync)
+Run a sync batch for provisional offline documents:
+```bash
+python3 scripts/offline_sync_worker.py \
+  --tenant-id TENANT_A \
+  --officer-id officer-sync \
+  --capacity-per-minute 50
+```
+This applies backlog pressure handling (`QUEUE_OVERFLOW`) and then syncs up to configured capacity.
+
+## MLOps Curation Script (Correction Validation Gate)
+Build a curated JSONL dataset from gated corrections:
+```bash
+python3 scripts/mlops_curate_training_data.py \
+  --tenant-id TENANT_A \
+  --output artifacts/training/tenant_a_curated.jsonl \
+  --approve-gates
+```
+
+## Config for Backends
+Environment flags in `.env`:
+- Event bus:
+  - `EVENT_BUS_BACKEND=inmemory|kafka|pulsar`
+  - `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_TOPIC`
+  - `PULSAR_SERVICE_URL`, `PULSAR_TOPIC`
+- OCR:
+  - `OCR_BACKEND=heuristic|tesseract|easyocr`
+  - `OCR_DEFAULT_LANG=eng`
+- Authenticity/fraud:
+  - `AUTHENTICITY_BACKEND=heuristic`
+  - `FRAUD_CALIBRATION_WEIGHTS={"image":0.35,"behavioral":0.35,"issuer":0.30}`
+- Issuer verification:
+  - `ISSUER_REGISTRY_BASE_URL`
+  - `ISSUER_REGISTRY_TOKEN`

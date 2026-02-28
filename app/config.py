@@ -26,6 +26,17 @@ class Settings:
     groq_api_key: str
     groq_model: str
     groq_user_agent: str
+    event_bus_backend: str
+    kafka_bootstrap_servers: str
+    kafka_topic: str
+    pulsar_service_url: str
+    pulsar_topic: str
+    issuer_registry_base_url: str
+    issuer_registry_token: str
+    ocr_backend: str
+    ocr_default_lang: str
+    authenticity_backend: str
+    fraud_calibration_weights: str
 
     def supabase_url_valid(self) -> bool:
         # Must be project URL, not postgres DSN.
@@ -49,6 +60,17 @@ def load_settings() -> Settings:
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             ),
         ).strip(),
+        event_bus_backend=os.getenv("EVENT_BUS_BACKEND", "inmemory").strip().lower(),
+        kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "").strip(),
+        kafka_topic=os.getenv("KAFKA_TOPIC", "document-events").strip(),
+        pulsar_service_url=os.getenv("PULSAR_SERVICE_URL", "").strip(),
+        pulsar_topic=os.getenv("PULSAR_TOPIC", "persistent://public/default/document-events").strip(),
+        issuer_registry_base_url=os.getenv("ISSUER_REGISTRY_BASE_URL", "").strip().rstrip("/"),
+        issuer_registry_token=os.getenv("ISSUER_REGISTRY_TOKEN", "").strip(),
+        ocr_backend=os.getenv("OCR_BACKEND", "heuristic").strip().lower(),
+        ocr_default_lang=os.getenv("OCR_DEFAULT_LANG", "eng").strip(),
+        authenticity_backend=os.getenv("AUTHENTICITY_BACKEND", "heuristic").strip().lower(),
+        fraud_calibration_weights=os.getenv("FRAUD_CALIBRATION_WEIGHTS", "").strip(),
     )
 
 

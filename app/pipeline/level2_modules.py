@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.domain.states import DocumentState
+from app.infra.authenticity_adapter import AuthenticityAdapter
+from app.infra.fraud_adapter import FraudCalibrationAdapter
+from app.infra.issuer_registry_adapter import IssuerRegistryAdapter
+from app.infra.ocr_adapter import OCRAdapter
 
 
 def _safe_float(value: Any, fallback: float = 0.0) -> float:
@@ -30,8 +34,11 @@ def _risk_level(score: float) -> str:
 class OCRPreprocessingModule:
     """Phase-1 OCR + quality + handwriting guardrail module."""
 
-    def preprocess(self, raw_text: str) -> dict[str, Any]:
-        normalized = " ".join((raw_text or "").split())
+    ocr_adapter: OCRAdapter
+
+    def preprocess(self, raw_text: str, source_path: str | None = None) -> dict[str, Any]:
+        recognized = self.ocr_adapter.recognize(text_fallback=raw_text, source_path=source_path)
+        normalized = " ".join(str(recognized.get("text", "")).split())
         dedup_hash = hashlib.sha256(normalized.lower().encode("utf-8")).hexdigest()
         quality_score = round(min(1.0, max(0.2, len(normalized) / 4500)), 3)
 
@@ -48,9 +55,12 @@ class OCRPreprocessingModule:
             "dedup_hash": dedup_hash,
             "quality_score": quality_score,
             "steps_applied": ["DESKEW", "DENOISE", "CONTRAST_ENHANCEMENT"],
+            "ocr_backend": recognized.get("backend", "heuristic"),
             "handwriting_probability": handwriting_probability,
             "is_handwriting_heavy": is_handwriting_heavy,
             "phase1_handwriting_policy": "HANDWRITING_TO_UNSTRUCTURED_REVIEW",
+            "ocr_recognition_confidence": recognized.get("confidence", 0.0),
+            "source_path": source_path,
         }
 
     def ocr(self, preprocess_out: dict[str, Any]) -> dict[str, Any]:
@@ -66,7 +76,17 @@ class OCRPreprocessingModule:
         if re.search(r"[\u0C80-\u0CFF]", text):
             script = "KANNADA"
 
-        ocr_conf = round(max(0.45, preprocess_out.get("quality_score", 0.5) - (0.2 if preprocess_out.get("is_handwriting_heavy") else 0.0)), 3)
+        ocr_conf = round(
+            max(
+                0.45,
+                max(
+                    preprocess_out.get("quality_score", 0.5),
+                    preprocess_out.get("ocr_recognition_confidence", 0.0),
+                )
+                - (0.2 if preprocess_out.get("is_handwriting_heavy") else 0.0),
+            ),
+            3,
+        )
         if not text:
             script = "UNKNOWN"
             ocr_conf = 0.0
@@ -77,6 +97,7 @@ class OCRPreprocessingModule:
             "ocr_confidence": ocr_conf,
             "script": script,
             "unstructured_due_to_handwriting": bool(preprocess_out.get("is_handwriting_heavy")),
+            "model_metadata": {"model_id": f"ocr-{preprocess_out.get('ocr_backend', 'heuristic')}", "model_version": "1.0.0"},
         }
 
 
@@ -209,32 +230,38 @@ class ValidationModule:
 class VisualAuthenticityModule:
     """Visual authenticity module for stamps/signatures + forensics signals."""
 
+    adapter: AuthenticityAdapter
+
     def detect_markers(self, text: str) -> dict[str, Any]:
-        t = text.lower()
-        stamp = any(tok in t for tok in ["stamp", "seal", "emblem"])
-        signature = any(tok in t for tok in ["signature", "signed", "sign"])
-        score = 0.45 + (0.25 if stamp else 0.0) + (0.2 if signature else 0.0)
+        inferred = self.adapter.infer_markers(text=text)
+        stamp = bool(inferred.get("stamp_present"))
+        signature = bool(inferred.get("signature_present"))
+        base_conf = _safe_float(inferred.get("confidence"), 0.5)
+        score = 0.35 + (0.25 if stamp else 0.0) + (0.2 if signature else 0.0) + (base_conf * 0.2)
         return {
             "stamp_present": stamp,
             "signature_present": signature,
             "authenticity_score": round(min(score, 1.0), 3),
+            "model_metadata": {"model_id": f"auth-{inferred.get('backend', 'heuristic')}", "model_version": "1.0.0"},
         }
 
     def forensics(self, text: str) -> dict[str, Any]:
-        t = text.lower()
-        tokens = ["tampered", "photoshop", "edited", "forged", "fake", "clone", "recompressed"]
-        hits = [tok for tok in tokens if tok in t]
-        risk = round(min(1.0, 0.15 + 0.17 * len(hits)), 3)
+        inferred = self.adapter.infer_forensics(text=text)
+        hits = [str(x) for x in inferred.get("signals", [])]
+        risk = round(_safe_float(inferred.get("risk"), 0.2), 3)
         return {
             "tamper_indicators": hits,
             "tamper_risk": risk,
-            "global_image_score": round(max(0.0, 1 - risk), 3),
+            "global_image_score": round(_safe_float(inferred.get("global_image_score"), max(0.0, 1 - risk)), 3),
+            "model_metadata": {"model_id": f"forensics-{inferred.get('backend', 'heuristic')}", "model_version": "1.0.0"},
         }
 
 
 @dataclass
 class FraudRiskEngineModule:
     """Aggregate risk module: image + behavioral + issuer mismatch."""
+
+    calibrator: FraudCalibrationAdapter
 
     def score(self, *, dedup_out: dict[str, Any], forensics_out: dict[str, Any], image_features_out: dict[str, Any], issuer_out: dict[str, Any]) -> dict[str, Any]:
         dup = int(dedup_out.get("duplicate_count", 0))
@@ -255,12 +282,10 @@ class FraudRiskEngineModule:
             issuer_mismatch_score = 0.9
             issuer_signals = [f"REGISTRY_{registry_status}"]
 
-        aggregate = round(
-            min(
-                1.0,
-                image_forensics_score * 0.35 + behavioral_score * 0.35 + issuer_mismatch_score * 0.30,
-            ),
-            3,
+        aggregate = self.calibrator.score(
+            image_score=image_forensics_score,
+            behavioral_score=behavioral_score,
+            issuer_score=issuer_mismatch_score,
         )
 
         return {
@@ -286,6 +311,7 @@ class FraudRiskEngineModule:
                     "signals": issuer_signals,
                 },
             },
+            "model_metadata": {"model_id": "fraud-calibrated-aggregator", "model_version": "1.0.0"},
         }
 
 
@@ -293,7 +319,9 @@ class FraudRiskEngineModule:
 class IssuerRegistryVerificationModule:
     """Issuer/registry verification module."""
 
-    def verify(self, *, extraction_out: dict[str, Any], classification_out: dict[str, Any]) -> dict[str, Any]:
+    registry_adapter: IssuerRegistryAdapter
+
+    def verify(self, *, tenant_id: str, extraction_out: dict[str, Any], classification_out: dict[str, Any]) -> dict[str, Any]:
         fields = dict(extraction_out.get("fields") or {})
         has_issuer = bool(fields.get("issuer"))
         has_num = bool(fields.get("document_number") or fields.get("roll_number") or fields.get("registration_number"))
@@ -303,6 +331,23 @@ class IssuerRegistryVerificationModule:
                 "registry_status": "NOT_AVAILABLE",
                 "registry_confidence": 0.0,
                 "verification_method": "NOT_AVAILABLE",
+            }
+
+        external = self.registry_adapter.verify(
+            tenant_id=tenant_id,
+            doc_type=str(classification_out.get("document_type", "UNKNOWN")),
+            fields=fields,
+        )
+        if external:
+            status = str(external.get("status", "UNVERIFIED")).upper()
+            confidence = _safe_float(external.get("confidence"), 0.6)
+            mapped_status = "MATCHED" if status in {"MATCHED", "CONFIRMED"} else "MISMATCH" if status in {"MISMATCH"} else "UNVERIFIED"
+            return {
+                "registry_status": mapped_status,
+                "registry_confidence": confidence,
+                "verification_method": str(external.get("verification_method", "REGISTRY_API")),
+                "issuer_reference_id": external.get("issuer_reference_id"),
+                "fields_compared": external.get("fields_compared", []),
             }
 
         if has_issuer and has_num:

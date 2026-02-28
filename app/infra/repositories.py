@@ -1132,6 +1132,100 @@ class Repository:
             rows = [r for r in rows if r.get("status") == status]
         return rows
 
+    def list_correction_events(self, tenant_id: str, document_id: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+        if self.client:
+            query = (
+                self.client.table("correction_events")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            if document_id:
+                query = query.eq("document_id", document_id)
+            result = exec_query(query)
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [r for r in MemoryStore.correction_events if r.get("tenant_id") == tenant_id]
+        if document_id:
+            rows = [r for r in rows if r.get("document_id") == document_id]
+        rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return rows[:limit]
+
+    def get_correction_event(self, correction_event_id: str) -> dict[str, Any] | None:
+        if self.client:
+            result = exec_query(
+                self.client.table("correction_events")
+                .select("*")
+                .eq("id", correction_event_id)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                rows = result["data"]
+                return rows[0] if rows else None
+
+        for row in MemoryStore.correction_events:
+            if str(row.get("id")) == correction_event_id:
+                return row
+        return None
+
+    def update_correction_gate_record(
+        self,
+        gate_id: str,
+        *,
+        status: str,
+        notes: list[str] | None = None,
+        validated_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        updates: dict[str, Any] = {"status": status}
+        if notes is not None:
+            updates["notes"] = notes
+        updates["validated_at"] = validated_at or _now()
+
+        if self.client:
+            exec_query(self.client.table("correction_validation_gate").update(updates).eq("id", gate_id))
+            result = exec_query(
+                self.client.table("correction_validation_gate")
+                .select("*")
+                .eq("id", gate_id)
+                .limit(1)
+            )
+            if result and result.get("data"):
+                rows = result["data"]
+                return rows[0] if rows else None
+
+        for row in MemoryStore.correction_gate_records:
+            if str(row.get("id")) == gate_id:
+                row.update(updates)
+                return row
+        return None
+
+    def list_pending_offline_documents(self, tenant_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        statuses = ["PENDING", "QUEUE_OVERFLOW"]
+        if self.client:
+            result = exec_query(
+                self.client.table("documents")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("offline_processed", True)
+                .in_("offline_sync_status", statuses)
+                .order("created_at", desc=False)
+                .limit(limit)
+            )
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows = [
+            r
+            for r in MemoryStore.documents.values()
+            if r.get("tenant_id") == tenant_id
+            and bool(r.get("offline_processed"))
+            and str(r.get("offline_sync_status", "")).upper() in statuses
+        ]
+        rows.sort(key=lambda x: x.get("created_at", ""))
+        return rows[:limit]
+
     def export_documents_for_tenant(self, tenant_id: str, include_raw_text: bool = False) -> list[dict[str, Any]]:
         docs = self.list_documents(tenant_id)
         if include_raw_text:
