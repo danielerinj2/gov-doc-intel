@@ -27,6 +27,8 @@ with st.expander("Environment status", expanded=False):
             "PERSISTENCE": "Supabase" if service.repo.using_supabase else f"In-memory fallback ({service.repo.error})",
             "PART2_SCHEMA_READY": service.repo.part2_schema_ready,
             "PART2_SCHEMA_GAPS": service.repo.schema_gaps[:8],
+            "PART3_SCHEMA_READY": service.repo.part3_schema_ready,
+            "PART3_SCHEMA_GAPS": service.repo.part3_schema_gaps[:8],
             "DR_PLAN": service.dr_service.describe(),
         }
     )
@@ -200,6 +202,19 @@ with right:
                     except Exception as exc:
                         st.error(str(exc))
 
+            conflict_reason = st.text_input("Internal disagreement reason", value="Officer assessments conflict", key="int_conflict_reason")
+            if st.button("Flag Internal Disagreement", use_container_width=True):
+                try:
+                    res = service.flag_internal_disagreement(
+                        document_id=selected_id,
+                        tenant_id=tenant_id.strip(),
+                        officer_id=officer_id.strip(),
+                        reason=conflict_reason.strip() or "OFFICER_DECISION_CONFLICT",
+                    )
+                    st.success(f"Escalated internal disagreement: {res['escalation'].get('id')}")
+                except Exception as exc:
+                    st.error(str(exc))
+
             st.markdown("### Dispute")
             disp_reason = st.text_input("Dispute reason", value="Citizen requests re-verification", key="disp_reason")
             disp_note = st.text_input("Evidence note", value="Attached registry screenshot", key="disp_note")
@@ -207,6 +222,26 @@ with right:
                 try:
                     row = service.open_dispute(selected_id, disp_reason, disp_note, tenant_id.strip(), officer_id.strip())
                     st.success(f"Dispute submitted: {row['id']}")
+                except Exception as exc:
+                    st.error(str(exc))
+
+            st.markdown("### Field Correction (MLOps Gate)")
+            corr_field = st.text_input("Field name", value="TOTAL_MARKS", key="corr_field")
+            corr_old = st.text_input("Old value", value="580", key="corr_old")
+            corr_new = st.text_input("New value", value="560", key="corr_new")
+            corr_reason = st.text_input("Correction reason", value="Corrected as per physical document", key="corr_reason")
+            if st.button("Log Field Correction", use_container_width=True):
+                try:
+                    gate = service.record_field_correction(
+                        document_id=selected_id,
+                        tenant_id=tenant_id.strip(),
+                        officer_id=officer_id.strip(),
+                        field_name=corr_field.strip(),
+                        old_value=corr_old.strip() or None,
+                        new_value=corr_new.strip() or None,
+                        reason=corr_reason.strip() or "FIELD_CORRECTION",
+                    )
+                    st.success(f"Correction logged. Gate status={gate['gate'].get('status')}")
                 except Exception as exc:
                     st.error(str(exc))
 
@@ -223,6 +258,16 @@ with right:
             try:
                 events = service.list_events(selected_id, tenant_id.strip(), officer_id.strip())
                 st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
+            except Exception as exc:
+                st.error(str(exc))
+
+            st.markdown("### Model Audit Logs")
+            try:
+                audit_logs = service.list_model_audit_logs(tenant_id.strip(), officer_id.strip(), document_id=selected_id)
+                if audit_logs:
+                    st.dataframe(pd.DataFrame(audit_logs), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No model audit entries yet.")
             except Exception as exc:
                 st.error(str(exc))
 
@@ -263,6 +308,16 @@ with c1:
     except Exception as exc:
         st.error(str(exc))
 
+    st.markdown("### Review Assignments")
+    try:
+        assignments = service.list_review_assignments(tenant_id.strip(), officer_id.strip())
+        if assignments:
+            st.dataframe(pd.DataFrame(assignments), use_container_width=True, hide_index=True)
+        else:
+            st.info("No review assignments.")
+    except Exception as exc:
+        st.error(str(exc))
+
 with c2:
     st.subheader("Notifications + Export")
     include_raw = st.checkbox("Include raw text in export", value=False)
@@ -290,6 +345,24 @@ with c2:
             st.info("No notifications yet.")
     except Exception as exc:
         st.error(str(exc))
+
+    st.markdown("### Webhook Outbox")
+    try:
+        outbox = service.list_webhook_outbox(tenant_id.strip(), officer_id.strip(), status="PENDING")
+        if outbox:
+            st.dataframe(pd.DataFrame(outbox), use_container_width=True, hide_index=True)
+        else:
+            st.info("No pending webhooks.")
+    except Exception as exc:
+        st.error(str(exc))
+
+st.divider()
+st.subheader("Monitoring + MLOps")
+try:
+    dashboard = service.monitoring_dashboard(tenant_id.strip(), officer_id.strip())
+    st.json(dashboard)
+except Exception as exc:
+    st.error(str(exc))
 
 with st.expander("Tenant Audit Timeline", expanded=False):
     try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -23,17 +24,24 @@ class DAG:
         order = self._topological_order()
         context = dict(seed)
         outputs: dict[str, dict[str, Any]] = {}
+        node_durations_ms: dict[str, float] = {}
 
         for name in order:
             node = self._nodes[name]
             merged = dict(context)
             for dep in node.depends_on:
                 merged[dep] = outputs[dep]
+
+            t0 = time.perf_counter()
             out = node.fn(merged)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+
             outputs[name] = out
             context[name] = out
+            node_durations_ms[name] = round(elapsed_ms, 3)
 
         context["node_outputs"] = outputs
+        context["node_durations_ms"] = node_durations_ms
         context["execution_order"] = order
         return context
 

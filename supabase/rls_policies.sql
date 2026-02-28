@@ -107,6 +107,12 @@ alter table public.disputes enable row level security;
 alter table public.citizen_notifications enable row level security;
 alter table public.review_escalations enable row level security;
 alter table public.document_records enable row level security;
+alter table public.model_audit_logs enable row level security;
+alter table public.module_metrics enable row level security;
+alter table public.human_review_assignments enable row level security;
+alter table public.webhook_outbox enable row level security;
+alter table public.correction_events enable row level security;
+alter table public.correction_validation_gate enable row level security;
 
 -- tenants
  drop policy if exists tenants_select_tenant on public.tenants;
@@ -362,6 +368,93 @@ to authenticated
 using (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']))
 with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']));
 
+ drop policy if exists model_audit_logs_select_tenant on public.model_audit_logs;
+create policy model_audit_logs_select_tenant
+on public.model_audit_logs
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists model_audit_logs_insert_writer on public.model_audit_logs;
+create policy model_audit_logs_insert_writer
+on public.model_audit_logs
+for insert
+to authenticated
+with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']));
+
+ drop policy if exists module_metrics_select_tenant on public.module_metrics;
+create policy module_metrics_select_tenant
+on public.module_metrics
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists module_metrics_insert_writer on public.module_metrics;
+create policy module_metrics_insert_writer
+on public.module_metrics
+for insert
+to authenticated
+with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']));
+
+ drop policy if exists human_review_assignments_select_tenant on public.human_review_assignments;
+create policy human_review_assignments_select_tenant
+on public.human_review_assignments
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists human_review_assignments_write_reviewer on public.human_review_assignments;
+create policy human_review_assignments_write_reviewer
+on public.human_review_assignments
+for all
+to authenticated
+using (public.has_tenant_role(tenant_id, array['reviewer', 'admin']))
+with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin']));
+
+ drop policy if exists webhook_outbox_select_tenant on public.webhook_outbox;
+create policy webhook_outbox_select_tenant
+on public.webhook_outbox
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists webhook_outbox_write_writer on public.webhook_outbox;
+create policy webhook_outbox_write_writer
+on public.webhook_outbox
+for all
+to authenticated
+using (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']))
+with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin']));
+
+ drop policy if exists correction_events_select_tenant on public.correction_events;
+create policy correction_events_select_tenant
+on public.correction_events
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists correction_events_insert_reviewer on public.correction_events;
+create policy correction_events_insert_reviewer
+on public.correction_events
+for insert
+to authenticated
+with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin']));
+
+ drop policy if exists correction_validation_gate_select_tenant on public.correction_validation_gate;
+create policy correction_validation_gate_select_tenant
+on public.correction_validation_gate
+for select
+to authenticated
+using (public.is_tenant_member(tenant_id));
+
+ drop policy if exists correction_validation_gate_write_reviewer on public.correction_validation_gate;
+create policy correction_validation_gate_write_reviewer
+on public.correction_validation_gate
+for all
+to authenticated
+using (public.has_tenant_role(tenant_id, array['reviewer', 'admin']))
+with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin']));
+
 -- Grants
 revoke all on table public.tenants from anon;
 revoke all on table public.officers from anon;
@@ -376,6 +469,12 @@ revoke all on table public.disputes from anon;
 revoke all on table public.citizen_notifications from anon;
 revoke all on table public.review_escalations from anon;
 revoke all on table public.document_records from anon;
+revoke all on table public.model_audit_logs from anon;
+revoke all on table public.module_metrics from anon;
+revoke all on table public.human_review_assignments from anon;
+revoke all on table public.webhook_outbox from anon;
+revoke all on table public.correction_events from anon;
+revoke all on table public.correction_validation_gate from anon;
 
 revoke all on table public.tenants from authenticated;
 revoke all on table public.officers from authenticated;
@@ -390,6 +489,12 @@ revoke all on table public.disputes from authenticated;
 revoke all on table public.citizen_notifications from authenticated;
 revoke all on table public.review_escalations from authenticated;
 revoke all on table public.document_records from authenticated;
+revoke all on table public.model_audit_logs from authenticated;
+revoke all on table public.module_metrics from authenticated;
+revoke all on table public.human_review_assignments from authenticated;
+revoke all on table public.webhook_outbox from authenticated;
+revoke all on table public.correction_events from authenticated;
+revoke all on table public.correction_validation_gate from authenticated;
 
 grant select on table public.tenants to authenticated;
 grant select, insert, update, delete on table public.officers to authenticated;
@@ -404,6 +509,12 @@ grant select, insert, update, delete on table public.disputes to authenticated;
 grant select, insert on table public.citizen_notifications to authenticated;
 grant select, insert, update, delete on table public.review_escalations to authenticated;
 grant select, insert, update, delete on table public.document_records to authenticated;
+grant select, insert on table public.model_audit_logs to authenticated;
+grant select, insert on table public.module_metrics to authenticated;
+grant select, insert, update, delete on table public.human_review_assignments to authenticated;
+grant select, insert, update, delete on table public.webhook_outbox to authenticated;
+grant select, insert on table public.correction_events to authenticated;
+grant select, insert, update, delete on table public.correction_validation_gate to authenticated;
 
 -- Storage bucket isolation
  do $$

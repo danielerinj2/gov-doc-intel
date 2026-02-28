@@ -72,7 +72,7 @@ def main() -> None:
     url = env.get("SUPABASE_URL", "").rstrip("/")
     key, key_source = pick_key(env)
     groq = env.get("GROQ_API_KEY", "")
-    groq_model = env.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    groq_model = env.get("GROQ_MODEL", "llama-3.1-70b-versatile")
     groq_user_agent = env.get(
         "GROQ_USER_AGENT",
         (

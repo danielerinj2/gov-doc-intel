@@ -70,7 +70,7 @@ def main() -> None:
     load_env()
 
     api_key = os.getenv("GROQ_API_KEY", "")
-    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
     user_agent = os.getenv(
         "GROQ_USER_AGENT",
         (

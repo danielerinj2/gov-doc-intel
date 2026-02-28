@@ -11,6 +11,8 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
 - Offline conflict framework (provisional local results, central source-of-truth)
 - Citizen notifications + dispute + review SLA escalation workflow
 - Unified versioned `document_record` persistence contract
+- Level-2 module boundaries across OCR, classification, template/rules, extraction, validation, authenticity, fraud, issuer verification, explainability/audit, human review workload, output integration, offline sync, and monitoring/MLOps
+- AI audit logs, module metrics, webhook outbox, human review assignment queue, and correction validation gate
 - Supabase persistence with in-memory fallback
 
 ## Setup
@@ -25,6 +27,7 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
    - `supabase/schema.sql`
    - `supabase/rls_policies.sql` (for publishable-key + authenticated JWT access)
    - If your DB was created earlier, run `supabase/part2_contracts_patch.sql` once
+   - If your DB predates Part-3 module tables, run `supabase/part3_operational_patch.sql` once
 4. Run app:
    ```bash
    streamlit run streamlit_app.py
@@ -37,7 +40,7 @@ Use:
 
 Do not use the Postgres connection string in `SUPABASE_URL`.
 
-Default Groq model is `llama-3.3-70b-versatile` (override with `GROQ_MODEL`).
+Default Groq model is `llama-3.1-70b-versatile` (override with `GROQ_MODEL`).
 Cloudflare-sensitive runtimes can set `GROQ_USER_AGENT` (already used in SDK calls).
 
 If using publishable key, your app requests must include a signed-in user JWT and that user must exist in `public.tenant_memberships`.
@@ -95,12 +98,25 @@ Implemented core events:
 - `document.approved`
 - `document.rejected`
 - `document.disputed`
+- `document.fraud_flagged`
+- `document.requires_reupload`
 - `document.archived`
 - `document.failed`
 - `offline.conflict.detected`
 - `offline.queue_overflow`
 - `notification.sent`
 - `review.escalated`
+- `review.assignment.created`
+- `webhook.queued`
+- `correction.logged`
+
+## Part-3 Operational Tables
+Implemented tenant-scoped operational persistence:
+- `model_audit_logs` (AI audit trail)
+- `module_metrics` (latency/status monitoring)
+- `human_review_assignments` (assignment + workload balancing)
+- `webhook_outbox` (integration fan-out)
+- `correction_events` + `correction_validation_gate` (correction validation gate)
 
 ## Part-2 Data Contracts
 Strict Pydantic schemas are implemented in:
@@ -143,6 +159,10 @@ python3 scripts/check_setup.py
 
 If app status shows `PART2_SCHEMA_READY=false`, apply:
 - `supabase/part2_contracts_patch.sql`
+- then rerun `supabase/rls_policies.sql`
+
+If app status shows `PART3_SCHEMA_READY=false`, apply:
+- `supabase/part3_operational_patch.sql`
 - then rerun `supabase/rls_policies.sql`
 
 ## Debug Groq

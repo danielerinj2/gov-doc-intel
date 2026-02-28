@@ -22,6 +22,7 @@ class NotificationService:
             "document.approved",
             "document.rejected",
             "document.disputed",
+            "document.requires_reupload",
             "review.completed",
             "offline.conflict.detected",
         }
@@ -90,6 +91,8 @@ class NotificationService:
             return f"Your document was rejected. Reason: {reason_text}."
         if event_type == "document.disputed":
             return "Your dispute has been accepted and moved to senior review."
+        if event_type == "document.requires_reupload":
+            return "Provisional result revised after centralized verification. Please re-upload or visit a service center."
         if event_type == "review.completed":
             return f"Review completed. Final decision: {decision}."
         if event_type == "offline.conflict.detected":

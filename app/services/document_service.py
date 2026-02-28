@@ -57,6 +57,12 @@ from app.events.contracts import BRANCH_MODULES, build_event_envelope
 from app.infra.groq_adapter import GroqAdapter
 from app.infra.repositories import REVIEW_ROLES, WRITER_ROLES, Repository
 from app.pipeline.dag import DAG, Node
+from app.pipeline.level2_modules import (
+    ExplainabilityAuditModule,
+    HumanReviewWorkloadModule,
+    MonitoringMLOpsModule,
+    OutputIntegrationModule,
+)
 from app.pipeline.nodes import PipelineNodes
 from app.services.dr_service import DRService
 from app.services.notification_service import NotificationService
@@ -72,6 +78,10 @@ class DocumentService:
         self.bus = InMemoryEventBus()
         self.notification_service = NotificationService(self.repo)
         self.dr_service = DRService()
+        self.explainability_audit_module = ExplainabilityAuditModule()
+        self.review_workload_module = HumanReviewWorkloadModule()
+        self.output_integration_module = OutputIntegrationModule()
+        self.monitoring_mlops_module = MonitoringMLOpsModule()
         self.dag = DAG(
             [
                 Node("preprocessing_hashing", self.nodes.preprocessing_hashing, []),
@@ -231,6 +241,37 @@ class DocumentService:
                 }
             )
 
+            self.monitoring_mlops_module.record_module_metrics(
+                repo=self.repo,
+                tenant_id=tenant_id,
+                document_id=doc["id"],
+                job_id=job_id,
+                node_durations_ms=dict(ctx.get("node_durations_ms") or {}),
+                node_outputs=dict(ctx.get("node_outputs") or {}),
+            )
+
+            audit_entries = self.explainability_audit_module.audit_entries(
+                tenant_id=tenant_id,
+                document_id=doc["id"],
+                job_id=job_id,
+                node_outputs=dict(ctx.get("node_outputs") or {}),
+                execution_order=list(ctx.get("execution_order") or []),
+            )
+            for entry in audit_entries:
+                self.repo.create_model_audit_log(
+                    tenant_id=entry["tenant_id"],
+                    document_id=entry["document_id"],
+                    job_id=entry["job_id"],
+                    module_name=entry["module_name"],
+                    model_id=entry["model_id"],
+                    model_version=entry["model_version"],
+                    input_ref=entry["input_ref"],
+                    output=entry["output"],
+                    reason_codes=list(entry.get("reason_codes") or []),
+                    actor_type=entry.get("actor_type", "SYSTEM"),
+                    actor_id=entry.get("actor_id"),
+                )
+
             self._event(
                 document_id=doc["id"],
                 tenant_id=tenant_id,
@@ -307,6 +348,23 @@ class DocumentService:
                 correlation_id=correlation_id,
             )
 
+            if str(ctx["merge_node"].get("risk_level", "LOW")) in {"HIGH", "CRITICAL"}:
+                self._event(
+                    document_id=doc["id"],
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=officer_id,
+                    event_type="document.fraud_flagged",
+                    payload={
+                        "risk_level": ctx["merge_node"]["risk_level"],
+                        "aggregate_fraud_risk_score": ctx["merge_node"]["risk_score"],
+                    },
+                    reason="HIGH_FRAUD_RISK",
+                    policy_version=policy_version,
+                    model_versions=model_versions,
+                    correlation_id=correlation_id,
+                )
+
             decision = ctx["output_notification"]["final_decision"]
             reason_codes = ctx["decision_explainability"]["reason_codes"]
 
@@ -320,6 +378,30 @@ class DocumentService:
                     event_type="document.flagged.for_review",
                     payload={"reason_codes": reason_codes},
                     reason="FLAGGED_FOR_OFFICER_REVIEW",
+                    policy_version=policy_version,
+                    model_versions=model_versions,
+                    correlation_id=correlation_id,
+                )
+                assignment = self.review_workload_module.assign(
+                    repo=self.repo,
+                    tenant_id=tenant_id,
+                    document_id=doc["id"],
+                    doc_type=str(ctx["template_map"].get("document_type", "UNKNOWN")),
+                    risk_level=str(ctx["merge_node"].get("risk_level", "MEDIUM")),
+                    policy="LEAST_LOADED",
+                )
+                self._event(
+                    document_id=doc["id"],
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=officer_id,
+                    event_type="review.assignment.created",
+                    payload={
+                        "assignment_id": str(assignment.get("id")),
+                        "queue_name": str(assignment.get("queue_name")),
+                        "policy": str(assignment.get("assignment_policy", "LEAST_LOADED")),
+                    },
+                    reason="AUTO_ASSIGNMENT",
                     policy_version=policy_version,
                     model_versions=model_versions,
                     correlation_id=correlation_id,
@@ -355,6 +437,8 @@ class DocumentService:
                     correlation_id=correlation_id,
                 )
                 final_state = DocumentState.REJECTED
+            if final_state in {DocumentState.APPROVED, DocumentState.REJECTED}:
+                self.repo.resolve_review_assignment(document_id=doc["id"], tenant_id=tenant_id, status="RESOLVED")
 
             updated = self.repo.update_document(
                 doc["id"],
@@ -374,6 +458,39 @@ class DocumentService:
             record = self._build_document_record(latest, job_id, ctx)
             self.repo.save_document_record(tenant_id, doc["id"], job_id, "1.0", {"document_record": record.model_dump()})
 
+            result_payload = self.output_integration_module.create_result_payload(
+                document_id=doc["id"],
+                job_id=job_id,
+                decision_out=ctx["decision_explainability"],
+                state=final_state,
+            )
+            webhook_event = (
+                "document.approved"
+                if final_state == DocumentState.APPROVED
+                else "document.rejected"
+                if final_state == DocumentState.REJECTED
+                else "document.flagged.for_review"
+            )
+            outbox = self.output_integration_module.queue_webhook(
+                repo=self.repo,
+                tenant_id=tenant_id,
+                document_id=doc["id"],
+                event_type=webhook_event,
+                payload=result_payload,
+            )
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="webhook.queued",
+                payload={"event_type": webhook_event, "outbox_id": str(outbox.get("id"))},
+                reason="OUTPUT_INTEGRATION",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
+
             # Offline conflict handling: central result overrides local provisional result.
             provisional = latest.get("provisional_decision")
             if provisional and provisional != decision:
@@ -385,6 +502,18 @@ class DocumentService:
                     event_type="offline.conflict.detected",
                     payload={"local_provisional": provisional, "central_decision": decision},
                     reason="CENTRAL_PIPELINE_OVERRIDE",
+                )
+                self.emit_custom_event(
+                    document_id=doc["id"],
+                    tenant_id=tenant_id,
+                    actor_type="SYSTEM",
+                    actor_id=officer_id,
+                    event_type="document.requires_reupload",
+                    payload={
+                        "message": "Provisional result revised after centralized verification.",
+                        "reason_code": "PROVISIONAL_REVISED",
+                    },
+                    reason="OFFLINE_CONFLICT_REUPLOAD_REQUIRED",
                 )
 
             return latest
@@ -427,6 +556,12 @@ class DocumentService:
         updated = self.repo.update_document(doc["id"], metadata=metadata)
         if updated:
             doc.update(updated)
+
+        open_assignments = self.repo.list_review_assignments(tenant_id, status="WAITING_FOR_REVIEW")
+        for assignment in open_assignments:
+            if str(assignment.get("document_id")) == str(doc["id"]):
+                self.repo.claim_review_assignment(assignment_id=str(assignment.get("id")), officer_id=officer_id)
+                break
 
         self._event(
             document_id=doc["id"],
@@ -506,6 +641,31 @@ class DocumentService:
             ),
         )
 
+        self.repo.resolve_review_assignment(document_id=doc["id"], tenant_id=tenant_id, status="RESOLVED")
+        outbox = self.output_integration_module.queue_webhook(
+            repo=self.repo,
+            tenant_id=tenant_id,
+            document_id=doc["id"],
+            event_type=target_event,
+            payload={
+                "document_id": doc["id"],
+                "decision": decision,
+                "state": "APPROVED" if decision == "APPROVE" else "REJECTED",
+                "reason": reason,
+            },
+        )
+        self._event(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            actor_type="SYSTEM",
+            actor_id=officer_id,
+            event_type="webhook.queued",
+            payload={"event_type": target_event, "outbox_id": str(outbox.get("id"))},
+            reason="OUTPUT_INTEGRATION",
+            policy_version=1,
+            model_versions=None,
+        )
+
         return self.repo.get_document(doc["id"], tenant_id=tenant_id) or updated
 
     def open_dispute(
@@ -546,7 +706,94 @@ class DocumentService:
             policy_version=1,
             model_versions=None,
         )
+        outbox = self.output_integration_module.queue_webhook(
+            repo=self.repo,
+            tenant_id=tenant_id,
+            document_id=doc["id"],
+            event_type="document.disputed",
+            payload={"document_id": doc["id"], "reason": reason, "status": "DISPUTED"},
+        )
+        self._event(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            actor_type="SYSTEM",
+            actor_id=officer_id,
+            event_type="webhook.queued",
+            payload={"event_type": "document.disputed", "outbox_id": str(outbox.get("id"))},
+            reason="OUTPUT_INTEGRATION",
+            policy_version=1,
+            model_versions=None,
+        )
+        assignment = self.review_workload_module.assign(
+            repo=self.repo,
+            tenant_id=tenant_id,
+            document_id=doc["id"],
+            doc_type="DISPUTE",
+            risk_level="HIGH",
+            policy="SENIOR_OFFICER",
+        )
+        self._event(
+            document_id=doc["id"],
+            tenant_id=tenant_id,
+            actor_type="SYSTEM",
+            actor_id=officer_id,
+            event_type="review.assignment.created",
+            payload={
+                "assignment_id": str(assignment.get("id")),
+                "queue_name": str(assignment.get("queue_name")),
+                "policy": str(assignment.get("assignment_policy", "SENIOR_OFFICER")),
+            },
+            reason="DISPUTE_ESCALATION_QUEUE",
+            policy_version=1,
+            model_versions=None,
+        )
         return row
+
+    def flag_internal_disagreement(
+        self,
+        *,
+        document_id: str,
+        tenant_id: str,
+        officer_id: str,
+        reason: str = "OFFICER_DECISION_CONFLICT",
+    ) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            raise ValueError("Document not found for tenant")
+
+        metadata = dict(doc.get("metadata") or {})
+        conflicts = list((metadata.get("internal_conflicts") or []))
+        conflicts.append(
+            {
+                "status": "DISPUTED_INTERNAL",
+                "officer_id": officer_id,
+                "reason": reason,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        metadata["internal_conflicts"] = conflicts
+        updated = self.repo.update_document(document_id, metadata=metadata)
+
+        escalation = self.repo.create_review_escalation(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            escalation_level=3,
+            assignee_role="admin",
+            reason=f"Internal disagreement: {reason}",
+        )
+        self._event(
+            document_id=document_id,
+            tenant_id=tenant_id,
+            actor_type="OFFICER",
+            actor_id=officer_id,
+            event_type="review.escalated",
+            payload={"escalation_level": 3, "assignee_role": "admin"},
+            reason="INTERNAL_DISAGREEMENT",
+            policy_version=1,
+            model_versions=None,
+        )
+        return {"document": updated or doc, "escalation": escalation}
 
     def archive_document(self, document_id: str, tenant_id: str, officer_id: str, archive_reason: str = "RETENTION_LIFECYCLE") -> dict[str, Any]:
         self._authorize(officer_id, tenant_id, REVIEW_ROLES)
@@ -692,6 +939,109 @@ class DocumentService:
     def list_review_escalations(self, tenant_id: str, officer_id: str, only_open: bool = True) -> list[dict[str, Any]]:
         self._authorize(officer_id, tenant_id, REVIEW_ROLES)
         return self.repo.list_review_escalations(tenant_id, only_open=only_open)
+
+    def list_review_assignments(self, tenant_id: str, officer_id: str, status: str | None = None) -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        return self.repo.list_review_assignments(tenant_id, status=status)
+
+    def list_model_audit_logs(self, tenant_id: str, officer_id: str, document_id: str | None = None) -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, None)
+        return self.repo.list_model_audit_logs(tenant_id, document_id=document_id)
+
+    def list_webhook_outbox(self, tenant_id: str, officer_id: str, status: str = "PENDING") -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        return self.repo.list_webhook_outbox(tenant_id, status=status)
+
+    def record_field_correction(
+        self,
+        *,
+        document_id: str,
+        tenant_id: str,
+        officer_id: str,
+        field_name: str,
+        old_value: str | None,
+        new_value: str | None,
+        reason: str,
+    ) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, REVIEW_ROLES)
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            raise ValueError("Document not found for tenant")
+
+        self._append_human_review_event(
+            doc,
+            HumanReviewEvent(
+                officer_id=officer_id,
+                action="FIELD_CORRECTED",
+                field_name=field_name,
+                old_value=old_value,
+                new_value=new_value,
+                reason=reason,
+                at=datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+        gate_result = self.monitoring_mlops_module.gate_correction(
+            repo=self.repo,
+            tenant_id=tenant_id,
+            document_id=document_id,
+            field_name=field_name,
+            old_value=old_value,
+            new_value=new_value,
+            officer_id=officer_id,
+            reason=reason,
+        )
+
+        latest = self.repo.get_document(document_id, tenant_id=tenant_id) or doc
+        metadata = dict(latest.get("metadata") or {})
+        ml_flags = dict(metadata.get("ml_training_flags") or {})
+        eligibility = dict(ml_flags.get("eligible_for_training") or {})
+        notes = list(ml_flags.get("data_quality_notes") or [])
+
+        gate_status = str((gate_result.get("gate") or {}).get("status", "UNKNOWN"))
+        if gate_status != "HIGH_CONFIDENCE":
+            eligibility["extraction"] = False
+            if "CORRECTION_PENDING_QA" not in notes:
+                notes.append("CORRECTION_PENDING_QA")
+
+        ml_flags["eligible_for_training"] = eligibility
+        ml_flags["data_quality_notes"] = notes
+        metadata["ml_training_flags"] = ml_flags
+        self.repo.update_document(document_id, metadata=metadata)
+
+        self._event(
+            document_id=document_id,
+            tenant_id=tenant_id,
+            actor_type="OFFICER",
+            actor_id=officer_id,
+            event_type="correction.logged",
+            payload={
+                "field_name": field_name,
+                "officer_id": officer_id,
+                "gate_status": gate_status,
+            },
+            reason=reason,
+            policy_version=1,
+            model_versions=None,
+        )
+        return gate_result
+
+    def monitoring_dashboard(self, tenant_id: str, officer_id: str) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, None)
+        mlops = self.monitoring_mlops_module.mlops_summary(repo=self.repo, tenant_id=tenant_id)
+        waiting = len(self.repo.list_review_assignments(tenant_id, status="WAITING_FOR_REVIEW"))
+        in_progress = len(self.repo.list_review_assignments(tenant_id, status="REVIEW_IN_PROGRESS"))
+        corrections_pending = len(self.repo.list_correction_gate_records(tenant_id, status="PENDING_QA"))
+        return {
+            "mlops": mlops,
+            "review_workload": {
+                "waiting_for_review": waiting,
+                "review_in_progress": in_progress,
+            },
+            "correction_validation": {
+                "pending_qa": corrections_pending,
+            },
+        }
 
     def batch_export_documents(self, tenant_id: str, officer_id: str, include_raw_text: bool = False) -> str:
         self._authorize(officer_id, tenant_id, REVIEW_ROLES)
