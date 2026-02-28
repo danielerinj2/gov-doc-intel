@@ -24,8 +24,14 @@ def load_env(path: str = ".env") -> dict[str, str]:
     return env
 
 
-def pick_key(env: dict[str, str]) -> str:
-    return env.get("SUPABASE_KEY") or env.get("SUPABASE_SERVICE_KEY") or env.get("SUPABASE_ANON_KEY") or ""
+def pick_key(env: dict[str, str]) -> tuple[str, str]:
+    if env.get("SUPABASE_SERVICE_KEY"):
+        return env["SUPABASE_SERVICE_KEY"], "SUPABASE_SERVICE_KEY"
+    if env.get("SUPABASE_KEY"):
+        return env["SUPABASE_KEY"], "SUPABASE_KEY"
+    if env.get("SUPABASE_ANON_KEY"):
+        return env["SUPABASE_ANON_KEY"], "SUPABASE_ANON_KEY"
+    return "", "NONE"
 
 
 def probe(url: str, headers: dict[str, str] | None = None) -> tuple[int | None, str]:
@@ -64,7 +70,7 @@ def probe_post(url: str, payload: dict, headers: dict[str, str] | None = None) -
 def main() -> None:
     env = load_env()
     url = env.get("SUPABASE_URL", "").rstrip("/")
-    key = pick_key(env)
+    key, key_source = pick_key(env)
     groq = env.get("GROQ_API_KEY", "")
     groq_model = env.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     groq_user_agent = env.get(
@@ -80,6 +86,7 @@ def main() -> None:
     print(json.dumps({
         "SUPABASE_URL_VALID": url_ok,
         "SUPABASE_KEY_PRESENT": bool(key),
+        "SUPABASE_KEY_SOURCE": key_source,
         "GROQ_KEY_PRESENT": bool(groq),
         "GROQ_MODEL": groq_model,
         "GROQ_USER_AGENT_SET": bool(groq_user_agent),

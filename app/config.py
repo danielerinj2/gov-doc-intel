@@ -12,8 +12,8 @@ load_dotenv()
 
 def _pick_supabase_key() -> str:
     return (
-        os.getenv("SUPABASE_KEY", "").strip()
-        or os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+        os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+        or os.getenv("SUPABASE_KEY", "").strip()
         or os.getenv("SUPABASE_ANON_KEY", "").strip()
     )
 
