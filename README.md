@@ -32,11 +32,17 @@ Use:
 
 Do not use the Postgres connection string in `SUPABASE_URL`.
 
-Default Groq model is `llama-3.1-70b-versatile` (override with `GROQ_MODEL`).
+Default Groq model is `llama-3.3-70b-versatile` (override with `GROQ_MODEL`).
+Cloudflare-sensitive runtimes can set `GROQ_USER_AGENT` (already used in SDK calls).
 
 If using publishable key, your app requests must include a signed-in user JWT and that user must exist in `public.tenant_memberships`.
 
 ## Verify env quickly
 ```bash
 python3 scripts/check_setup.py
+```
+
+## Debug Groq
+```bash
+./scripts/debug_groq.py
 ```

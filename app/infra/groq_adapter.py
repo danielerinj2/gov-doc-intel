@@ -13,6 +13,7 @@ class GroqAdapter:
     def __init__(self) -> None:
         self.client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
         self.model = settings.groq_model
+        self.user_agent = settings.groq_user_agent
 
     @property
     def enabled(self) -> bool:
@@ -50,6 +51,7 @@ class GroqAdapter:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text[:12000]},
                 ],
+                extra_headers={"User-Agent": self.user_agent} if self.user_agent else None,
             )
             content = completion.choices[0].message.content
             return json.loads(content) if content else None

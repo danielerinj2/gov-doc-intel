@@ -25,6 +25,7 @@ class Settings:
     supabase_key: str
     groq_api_key: str
     groq_model: str
+    groq_user_agent: str
 
     def supabase_url_valid(self) -> bool:
         # Must be project URL, not postgres DSN.
@@ -40,7 +41,14 @@ def load_settings() -> Settings:
         supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),
         supabase_key=_pick_supabase_key(),
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
-        groq_model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile").strip(),
+        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
+        groq_user_agent=os.getenv(
+            "GROQ_USER_AGENT",
+            (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        ).strip(),
     )
 
 

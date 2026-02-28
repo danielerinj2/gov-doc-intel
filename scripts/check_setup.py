@@ -42,11 +42,38 @@ def probe(url: str, headers: dict[str, str] | None = None) -> tuple[int | None, 
         return None, str(exc)
 
 
+def probe_post(url: str, payload: dict, headers: dict[str, str] | None = None) -> tuple[int | None, str]:
+    ctx = ssl._create_unverified_context()
+    req = request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers or {},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=20, context=ctx) as resp:
+            body = resp.read().decode("utf-8", "ignore")
+            return resp.status, body[:280]
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "ignore")
+        return exc.code, body[:280]
+    except Exception as exc:
+        return None, str(exc)
+
+
 def main() -> None:
     env = load_env()
     url = env.get("SUPABASE_URL", "").rstrip("/")
     key = pick_key(env)
     groq = env.get("GROQ_API_KEY", "")
+    groq_model = env.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    groq_user_agent = env.get(
+        "GROQ_USER_AGENT",
+        (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+    )
 
     print("== ENV VALIDATION ==")
     url_ok = bool(re.match(r"^https://[a-z0-9-]+\.supabase\.co$", url))
@@ -54,6 +81,8 @@ def main() -> None:
         "SUPABASE_URL_VALID": url_ok,
         "SUPABASE_KEY_PRESENT": bool(key),
         "GROQ_KEY_PRESENT": bool(groq),
+        "GROQ_MODEL": groq_model,
+        "GROQ_USER_AGENT_SET": bool(groq_user_agent),
         "SUPABASE_KEY_TYPE": (
             "service" if key.startswith("sb_secret_") else "publishable" if key.startswith("sb_publishable_") else "jwt_or_unknown"
         ),
@@ -84,11 +113,28 @@ def main() -> None:
     if groq:
         status3, detail3 = probe(
             "https://api.groq.com/openai/v1/models",
-            headers={"Authorization": f"Bearer {groq}"},
+            headers={"Authorization": f"Bearer {groq}", "User-Agent": groq_user_agent},
         )
         print(f"groq_models: status={status3}")
         if status3 is None or status3 >= 400:
             print(f"  detail={detail3}")
+
+        status4, detail4 = probe_post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            payload={
+                "model": groq_model,
+                "messages": [{"role": "user", "content": "Ping"}],
+                "temperature": 0,
+            },
+            headers={
+                "Authorization": f"Bearer {groq}",
+                "User-Agent": groq_user_agent,
+                "Content-Type": "application/json",
+            },
+        )
+        print(f"groq_chat_probe: status={status4}")
+        if status4 is None or status4 >= 400:
+            print(f"  detail={detail4}")
     else:
         print("groq_models: skipped (no GROQ_API_KEY)")
 
