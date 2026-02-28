@@ -22,10 +22,20 @@ def _now() -> str:
 class Repository:
     def __init__(self) -> None:
         self.client, self.error = get_supabase_client()
+        if self.client and not self._probe_documents_access():
+            self.client = None
+            if not self.error:
+                self.error = "Supabase connected but documents table access failed (check schema/RLS/key)"
 
     @property
     def using_supabase(self) -> bool:
         return self.client is not None
+
+    def _probe_documents_access(self) -> bool:
+        if not self.client:
+            return False
+        result = exec_query(self.client.table("documents").select("id").limit(1))
+        return result is not None
 
     def create_document(self, doc: Document) -> dict[str, Any]:
         row = {
