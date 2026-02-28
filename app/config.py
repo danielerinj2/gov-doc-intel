@@ -40,7 +40,7 @@ def load_settings() -> Settings:
         supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),
         supabase_key=_pick_supabase_key(),
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
-        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
+        groq_model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile").strip(),
     )
 
 
