@@ -186,7 +186,18 @@ Unified records are persisted per `document_id + job_id` in `document_records.re
 ## First Run in UI
 1. Use sidebar to set `Tenant ID` and `Officer ID`.
 2. Click `Register / Bind Officer` once.
-3. Then ingest/process documents.
+3. Choose your role and navigate role-aware sections:
+   - `Intake & Processing`
+   - `Review Workbench`
+   - `Dispute Desk`
+   - `Fraud & Authenticity`
+   - `Citizen Communication`
+   - `Audit Trail & Explainability`
+   - `Governance & KPI`
+   - `Ops & DR Monitor`
+   - `Integrations (API/Webhook/Export)`
+   - `Offline Sync Console`
+4. Select a document in sidebar to load shared `Document Header` and role-specific fields.
 
 ## Verify env quickly
 ```bash
