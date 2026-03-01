@@ -418,6 +418,14 @@ def _read_uploaded_document(uploaded_file: Any) -> tuple[str, str | None]:
             raw_text = "\n".join((p.extract_text() or "") for p in reader.pages[:10]).strip()
         except Exception:
             pass
+    elif suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
+        try:
+            from app.infra.ocr_adapter import OCRAdapter
+
+            recognized = OCRAdapter().recognize(text_fallback="", source_path=tmp_path)
+            raw_text = str(recognized.get("text", "") or "").strip()
+        except Exception:
+            pass
     return raw_text, tmp_path
 
 
@@ -815,12 +823,26 @@ def _render_intake_processing(
                 upload_text, source_path = _read_uploaded_document(uploaded)
                 raw_text = (upload_text or "").strip()
                 fallback_clean = (fallback_text or "").strip()
+                suffix = Path(str(uploaded.name)).suffix.lower()
+                is_image_upload = suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+                is_pdf_upload = suffix == ".pdf"
 
                 if not raw_text and not fallback_clean:
-                    st.session_state["portal_fallback_required"] = True
-                    st.session_state["portal_fallback_file"] = file_sig
-                    st.error("No extractable text found. Enter fallback text and submit again.")
-                    return
+                    # For image/PDF uploads, allow pipeline OCR attempt instead of hard blocking.
+                    if is_image_upload or is_pdf_upload:
+                        st.session_state["portal_fallback_required"] = True
+                        st.session_state["portal_fallback_file"] = file_sig
+                        if settings.ocr_backend == "heuristic":
+                            st.warning(
+                                "No embedded text found. Proceeding with image OCR attempt, "
+                                "but OCR_BACKEND is 'heuristic'. For best results on images, "
+                                "set OCR_BACKEND=tesseract."
+                            )
+                    else:
+                        st.session_state["portal_fallback_required"] = True
+                        st.session_state["portal_fallback_file"] = file_sig
+                        st.error("No extractable text found. Enter fallback text and submit again.")
+                        return
 
                 st.session_state["portal_fallback_required"] = False
                 st.session_state["portal_fallback_file"] = ""
