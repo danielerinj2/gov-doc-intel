@@ -13,15 +13,11 @@ from app.config import settings
 from app.infra.repositories import (
     ROLE_ADMIN,
     ROLE_AUDITOR,
-    ROLE_CASE_WORKER,
+    ROLE_OFFICER,
+    ROLE_OPERATOR,
     ROLE_PLATFORM_AUDITOR,
     ROLE_PLATFORM_SUPER_ADMIN,
-    ROLE_REVIEWER,
-    ROLE_TENANT_ADMIN,
-    ROLE_TENANT_AUDITOR,
-    ROLE_TENANT_OFFICER,
-    ROLE_TENANT_OPERATOR,
-    ROLE_TENANT_SENIOR_OFFICER,
+    ROLE_SENIOR_OFFICER,
 )
 from app.services.document_service import DocumentService
 from app.services.governance_service import GovernanceService
@@ -273,13 +269,9 @@ offline_service = OfflineService(service)
 
 # ── Role constants ─────────────────────────────────────────────────────────────
 ALL_ROLES = [
-    ROLE_TENANT_OPERATOR,
-    ROLE_TENANT_OFFICER,
-    ROLE_TENANT_SENIOR_OFFICER,
-    ROLE_TENANT_ADMIN,
-    ROLE_TENANT_AUDITOR,
-    ROLE_CASE_WORKER,
-    ROLE_REVIEWER,
+    ROLE_OPERATOR,
+    ROLE_OFFICER,
+    ROLE_SENIOR_OFFICER,
     ROLE_ADMIN,
     ROLE_AUDITOR,
     ROLE_PLATFORM_AUDITOR,
@@ -287,20 +279,17 @@ ALL_ROLES = [
 ]
 
 WRITE_ROLES = {
-    ROLE_TENANT_OPERATOR, ROLE_TENANT_OFFICER, ROLE_TENANT_SENIOR_OFFICER,
-    ROLE_TENANT_ADMIN, ROLE_CASE_WORKER, ROLE_REVIEWER, ROLE_ADMIN,
+    ROLE_OPERATOR, ROLE_OFFICER, ROLE_SENIOR_OFFICER, ROLE_ADMIN,
 }
 REVIEW_ROLES = {
-    ROLE_TENANT_OFFICER, ROLE_TENANT_SENIOR_OFFICER, ROLE_TENANT_ADMIN,
-    ROLE_REVIEWER, ROLE_ADMIN,
+    ROLE_OFFICER, ROLE_SENIOR_OFFICER, ROLE_ADMIN,
 }
-SENIOR_REVIEW_ROLES = {ROLE_TENANT_SENIOR_OFFICER, ROLE_TENANT_ADMIN, ROLE_ADMIN}
-ADMIN_ROLES = {ROLE_TENANT_ADMIN, ROLE_ADMIN}
-AUDIT_ROLES = {ROLE_TENANT_AUDITOR, ROLE_AUDITOR, ROLE_TENANT_ADMIN, ROLE_ADMIN}
+SENIOR_REVIEW_ROLES = {ROLE_SENIOR_OFFICER, ROLE_ADMIN}
+ADMIN_ROLES = {ROLE_ADMIN}
+AUDIT_ROLES = {ROLE_AUDITOR, ROLE_ADMIN}
 PLATFORM_ROLES = {ROLE_PLATFORM_AUDITOR, ROLE_PLATFORM_SUPER_ADMIN}
 SENSITIVE_VIEW_ROLES = {
-    ROLE_TENANT_OPERATOR, ROLE_TENANT_OFFICER, ROLE_TENANT_SENIOR_OFFICER,
-    ROLE_TENANT_ADMIN, ROLE_CASE_WORKER, ROLE_REVIEWER, ROLE_ADMIN,
+    ROLE_OPERATOR, ROLE_OFFICER, ROLE_SENIOR_OFFICER, ROLE_ADMIN,
 }
 
 # ── Pages ──────────────────────────────────────────────────────────────────────
@@ -321,29 +310,25 @@ PAGES = [
 
 PAGE_ACCESS: dict[str, set[str]] = {
     "🏠 Dashboard":              set(ALL_ROLES),
-    "📥 Intake & Processing":    WRITE_ROLES | AUDIT_ROLES,
-    "🔍 Review Workbench":       REVIEW_ROLES | AUDIT_ROLES,
-    "⚖️ Dispute Desk":           REVIEW_ROLES | AUDIT_ROLES,
-    "🛡️ Fraud & Authenticity":   REVIEW_ROLES | AUDIT_ROLES,
-    "💬 Citizen Communication":  WRITE_ROLES | REVIEW_ROLES | AUDIT_ROLES,
-    "📋 Audit Trail":            AUDIT_ROLES | REVIEW_ROLES,
-    "📊 Governance & KPI":       ADMIN_ROLES | {ROLE_TENANT_AUDITOR, ROLE_AUDITOR} | PLATFORM_ROLES,
+    "📥 Intake & Processing":    WRITE_ROLES,
+    "🔍 Review Workbench":       REVIEW_ROLES,
+    "⚖️ Dispute Desk":           SENIOR_REVIEW_ROLES,
+    "🛡️ Fraud & Authenticity":   REVIEW_ROLES,
+    "💬 Citizen Communication":  WRITE_ROLES | REVIEW_ROLES,
+    "📋 Audit Trail":            AUDIT_ROLES | REVIEW_ROLES | PLATFORM_ROLES,
+    "📊 Governance & KPI":       ADMIN_ROLES | {ROLE_AUDITOR} | PLATFORM_ROLES,
     "🖥️ Ops Monitor":            ADMIN_ROLES | REVIEW_ROLES | PLATFORM_ROLES,
-    "🔗 Integrations":           ADMIN_ROLES | REVIEW_ROLES,
+    "🔗 Integrations":           ADMIN_ROLES,
     "📴 Offline Sync":           WRITE_ROLES | ADMIN_ROLES,
     "🤖 ML Training":            ADMIN_ROLES | REVIEW_ROLES | AUDIT_ROLES,
 }
 
 ROLE_META: dict[str, dict[str, str]] = {
-    ROLE_TENANT_OPERATOR:       {"icon": "🧑‍💼", "label": "Operator",        "color": "#4fc3f7"},
-    ROLE_TENANT_OFFICER:        {"icon": "👮",   "label": "Officer",          "color": "#81c784"},
-    ROLE_TENANT_SENIOR_OFFICER: {"icon": "🎖️",  "label": "Senior Officer",   "color": "#ffb74d"},
-    ROLE_TENANT_ADMIN:          {"icon": "🔑",   "label": "Tenant Admin",     "color": "#ce93d8"},
-    ROLE_TENANT_AUDITOR:        {"icon": "🔎",   "label": "Tenant Auditor",   "color": "#80deea"},
-    ROLE_CASE_WORKER:           {"icon": "📂",   "label": "Case Worker",      "color": "#a5d6a7"},
-    ROLE_REVIEWER:              {"icon": "✅",   "label": "Reviewer",         "color": "#fff176"},
-    ROLE_ADMIN:                 {"icon": "⚙️",   "label": "Admin",            "color": "#ef9a9a"},
-    ROLE_AUDITOR:               {"icon": "📜",   "label": "Auditor",          "color": "#b0bec5"},
+    ROLE_OPERATOR:              {"icon": "🧑‍💼", "label": "Operator",        "color": "#4fc3f7"},
+    ROLE_OFFICER:               {"icon": "👮",   "label": "Officer",          "color": "#81c784"},
+    ROLE_SENIOR_OFFICER:        {"icon": "🎖️",  "label": "Senior Officer",   "color": "#ffb74d"},
+    ROLE_ADMIN:                 {"icon": "🔑",   "label": "Admin",            "color": "#ce93d8"},
+    ROLE_AUDITOR:               {"icon": "🔎",   "label": "Auditor",          "color": "#80deea"},
     ROLE_PLATFORM_AUDITOR:      {"icon": "🌐",   "label": "Platform Auditor", "color": "#f48fb1"},
     ROLE_PLATFORM_SUPER_ADMIN:  {"icon": "👑",   "label": "Platform Admin",   "color": "#ffcc02"},
 }
@@ -617,7 +602,7 @@ def _render_dashboard(
     # ── Role-specific action cards ────────────────────────────────────────────
     _section("⚡ Quick Actions")
 
-    if role in {ROLE_TENANT_OPERATOR, ROLE_CASE_WORKER}:
+    if role == ROLE_OPERATOR:
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown(_action_card("📤", "Submit New Document", "Upload and process a citizen document through the AI verification pipeline."), unsafe_allow_html=True)
@@ -635,7 +620,7 @@ def _render_dashboard(
                 st.session_state["_nav_override"] = "💬 Citizen Communication"
                 st.rerun()
 
-    elif role in {ROLE_TENANT_OFFICER, ROLE_REVIEWER}:
+    elif role == ROLE_OFFICER:
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown(_action_card("🔍", "Review Queue", f"{waiting} documents awaiting your review. Inspect evidence, validate fields, and decide."), unsafe_allow_html=True)
@@ -653,7 +638,7 @@ def _render_dashboard(
                 st.session_state["_nav_override"] = "📋 Audit Trail"
                 st.rerun()
 
-    elif role == ROLE_TENANT_SENIOR_OFFICER:
+    elif role == ROLE_SENIOR_OFFICER:
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown(_action_card("⚖️", "Disputes", "Review citizen appeals and resolve internal disagreements between officers."), unsafe_allow_html=True)
@@ -694,7 +679,7 @@ def _render_dashboard(
                 st.session_state["_nav_override"] = "🔗 Integrations"
                 st.rerun()
 
-    elif role in {ROLE_TENANT_AUDITOR, ROLE_AUDITOR}:
+    elif role == ROLE_AUDITOR:
         c1, c2 = st.columns(2)
         with c1:
             st.markdown(_action_card("📋", "Audit Trail", "Full state history, event timeline, model versions, and human overrides."), unsafe_allow_html=True)
@@ -1534,7 +1519,7 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
                 o1, o2 = st.columns(2)
                 with o1:
                     oid = st.text_input("Officer ID", value="officer-new-001")
-                    orole = st.selectbox("Role", [ROLE_TENANT_OPERATOR, ROLE_TENANT_OFFICER, ROLE_TENANT_SENIOR_OFFICER, ROLE_TENANT_ADMIN, ROLE_TENANT_AUDITOR])
+                    orole = st.selectbox("Role", [ROLE_OPERATOR, ROLE_OFFICER, ROLE_SENIOR_OFFICER, ROLE_ADMIN, ROLE_AUDITOR])
                 with o2:
                     ost = st.selectbox("Status", ["ACTIVE", "INACTIVE"])
                 if st.form_submit_button("💾 Save", use_container_width=True):

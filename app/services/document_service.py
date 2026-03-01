@@ -56,7 +56,7 @@ from app.domain.states import DocumentState
 from app.events.backends import build_event_bus
 from app.events.contracts import BRANCH_MODULES, build_event_envelope
 from app.infra.groq_adapter import GroqAdapter
-from app.infra.repositories import ADMIN_ROLES, REVIEW_ROLES, ROLE_TENANT_OPERATOR, WRITER_ROLES, Repository
+from app.infra.repositories import ADMIN_ROLES, REVIEW_ROLES, ROLE_OPERATOR, WRITER_ROLES, Repository
 from app.pipeline.dag import DAG, Node
 from app.pipeline.level2_modules import (
     ExplainabilityAuditModule,
@@ -1193,10 +1193,10 @@ class DocumentService:
         try:
             existing = self.repo.get_officer(system_actor_id)
             if not existing:
-                self.register_officer(system_actor_id, tenant_id, ROLE_TENANT_OPERATOR)
+                self.register_officer(system_actor_id, tenant_id, ROLE_OPERATOR)
         except Exception:
             # Best effort for local/demo mode.
-            self.register_officer(system_actor_id, tenant_id, ROLE_TENANT_OPERATOR)
+            self.register_officer(system_actor_id, tenant_id, ROLE_OPERATOR)
 
         payload = dict(metadata or {})
         payload.setdefault("source", "ONLINE_PORTAL")
@@ -1247,7 +1247,7 @@ class DocumentService:
         system_actor_id = f"citizen-dispute-{tenant_id}"
         existing = self.repo.get_officer(system_actor_id)
         if not existing:
-            self.register_officer(system_actor_id, tenant_id, ROLE_TENANT_OPERATOR)
+            self.register_officer(system_actor_id, tenant_id, ROLE_OPERATOR)
 
         return self.open_dispute(
             document_id=document_id,
