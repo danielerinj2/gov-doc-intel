@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from app.config import settings
+from app.infra.email_adapter import GovDocIQEmailAdapter
 from app.infra.supabase_client import get_supabase_client
 from app.infra.repositories import (
     ROLE_AUDITOR,
@@ -264,6 +265,7 @@ st.markdown(
 service = DocumentService()
 governance = GovernanceService(service.repo)
 offline_service = OfflineService(service)
+email_adapter = GovDocIQEmailAdapter()
 
 # ── Role constants ─────────────────────────────────────────────────────────────
 ALL_ROLES = [
@@ -2092,6 +2094,84 @@ def _extract_auth_identity(response: Any) -> tuple[str | None, str | None]:
     return str(getattr(user, "id", "") or ""), str(getattr(user, "email", "") or "")
 
 
+def _role_label(role: str) -> str:
+    return str(ROLE_META.get(role, {}).get("label") or role or "User")
+
+
+def _default_user_name(input_name: str, email: str) -> str:
+    cleaned = str(input_name or "").strip()
+    if cleaned:
+        return cleaned
+    local = str(email or "").split("@", 1)[0].replace(".", " ").replace("_", " ").strip()
+    return local.title() if local else "User"
+
+
+def _extract_reset_link(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate if candidate.startswith("http") else None
+    if isinstance(value, dict):
+        for key in ("action_link", "confirmation_url", "url", "recovery_link"):
+            candidate = _extract_reset_link(value.get(key))
+            if candidate:
+                return candidate
+        for nested_key in ("properties", "data"):
+            candidate = _extract_reset_link(value.get(nested_key))
+            if candidate:
+                return candidate
+        return None
+    for attr in ("action_link", "confirmation_url", "url", "recovery_link", "properties", "data"):
+        try:
+            candidate = _extract_reset_link(getattr(value, attr, None))
+            if candidate:
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _generate_supabase_recovery_link(auth: Any, email: str) -> str | None:
+    try:
+        admin = getattr(auth, "admin", None)
+        if admin is None:
+            return None
+        payload = {
+            "type": "recovery",
+            "email": email,
+            "options": {"redirect_to": settings.password_reset_redirect_url},
+        }
+        if hasattr(admin, "generate_link"):
+            response = admin.generate_link(payload)
+            return _extract_reset_link(response)
+    except Exception:
+        return None
+    return None
+
+
+def _trigger_supabase_password_reset(auth: Any, email: str) -> tuple[bool, str]:
+    if not email.strip():
+        return False, "email missing"
+    redirect_to = settings.password_reset_redirect_url
+    errors: list[str] = []
+
+    calls = [
+        lambda: auth.reset_password_for_email(email, {"redirect_to": redirect_to}),
+        lambda: auth.reset_password_for_email(email, redirect_to=redirect_to),
+        lambda: auth.reset_password_email(email, {"redirect_to": redirect_to}),
+        lambda: auth.reset_password_email(email, redirect_to=redirect_to),
+    ]
+    for call in calls:
+        try:
+            call()
+            return True, "reset triggered"
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return False, " | ".join(errors[-2:]) if errors else "reset methods unavailable"
+
+
 def _set_auth_identity(user_id: str, email: str | None) -> None:
     st.session_state[AUTH_USER_ID_KEY] = user_id
     st.session_state[AUTH_EMAIL_KEY] = (email or "").strip()
@@ -2143,11 +2223,75 @@ def _render_auth_gate() -> bool:
             except Exception as exc:
                 st.error(str(exc))
 
+        st.markdown("### Recovery")
+        fp_col, fu_col = st.columns(2)
+        with fp_col:
+            with st.form("auth_forgot_password_form"):
+                fp_email = st.text_input("Forgot password email", value="", placeholder="name@example.com")
+                fp_name = st.text_input("Name (optional)", value="")
+                fp_role = st.selectbox(
+                    "Role",
+                    ALL_ROLES,
+                    format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
+                    key="forgot_password_role",
+                )
+                submit_forgot_password = st.form_submit_button("Send Password Reset", use_container_width=True)
+            if submit_forgot_password:
+                target_email = fp_email.strip()
+                if not target_email:
+                    st.error("Email is required.")
+                else:
+                    reset_ok, reset_detail = _trigger_supabase_password_reset(auth, target_email)
+                    recovery_link = _generate_supabase_recovery_link(auth, target_email)
+                    send_result = email_adapter.send_email(
+                        to_email=target_email,
+                        template_type="forgot",
+                        user_name=_default_user_name(fp_name, target_email),
+                        role=_role_label(fp_role),
+                        user_email=target_email,
+                        reset_link=recovery_link or settings.password_reset_redirect_url,
+                    )
+                    if reset_ok:
+                        st.success("Password reset flow triggered. Check your inbox.")
+                    else:
+                        st.warning(f"Supabase reset trigger returned: {reset_detail}")
+                    if not send_result.ok:
+                        st.info(f"Custom email not sent: {send_result.detail}")
+
+        with fu_col:
+            with st.form("auth_forgot_username_form"):
+                fu_email = st.text_input("Forgot username email", value="", placeholder="name@example.com")
+                fu_name = st.text_input("Name (optional)", value="", key="forgot_username_name")
+                fu_role = st.selectbox(
+                    "Role",
+                    ALL_ROLES,
+                    format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
+                    key="forgot_username_role",
+                )
+                submit_forgot_username = st.form_submit_button("Send Username Reminder", use_container_width=True)
+            if submit_forgot_username:
+                target_email = fu_email.strip()
+                if not target_email:
+                    st.error("Email is required.")
+                else:
+                    send_result = email_adapter.send_email(
+                        to_email=target_email,
+                        template_type="username",
+                        user_name=_default_user_name(fu_name, target_email),
+                        role=_role_label(fu_role),
+                        user_email=target_email,
+                    )
+                    if send_result.ok:
+                        st.success("Username reminder sent.")
+                    else:
+                        st.error(f"Username reminder failed: {send_result.detail}")
+
     with sign_up_tab:
         with st.form("auth_sign_up_form"):
             email_su = st.text_input("Email", value="", placeholder="name@example.com")
             pwd_su = st.text_input("Password", type="password")
             pwd_confirm = st.text_input("Confirm Password", type="password")
+            full_name_su = st.text_input("Name (optional)", value="")
             role_su = st.selectbox(
                 "Role",
                 ALL_ROLES,
@@ -2188,6 +2332,15 @@ def _render_auth_gate() -> bool:
                         )
                         _set_auth_identity(user_id, user_email or email_su)
                         st.success("Account created and linked. Signed in.")
+                        send_result = email_adapter.send_email(
+                            to_email=(user_email or email_su.strip()),
+                            template_type="signup",
+                            user_name=_default_user_name(full_name_su, user_email or email_su),
+                            role=_role_label(role_su),
+                            user_email=(user_email or email_su.strip()),
+                        )
+                        if not send_result.ok:
+                            st.info(f"Signup confirmation email not sent: {send_result.detail}")
                         st.rerun()
                 except Exception as exc:
                     st.error(str(exc))

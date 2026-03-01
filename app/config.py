@@ -81,8 +81,12 @@ def _pick_supabase_key() -> str:
 class Settings:
     app_env: str
     default_workspace_id: str
+    app_login_url: str
+    password_reset_redirect_url: str
     supabase_url: str
     supabase_key: str
+    sendgrid_api_key: str
+    sendgrid_from_email: str
     groq_api_key: str
     groq_model: str
     groq_user_agent: str
@@ -109,6 +113,11 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    app_login_url = _get_config_value(
+        "APP_LOGIN_URL",
+        "GOVDOCIQ_LOGIN_URL",
+        default="https://govdociq.streamlit.app",
+    )
     return Settings(
         app_env=_get_config_value("APP_ENV", default="dev"),
         default_workspace_id=_get_config_value(
@@ -117,8 +126,16 @@ def load_settings() -> Settings:
             "DEPARTMENT_ID",
             default="workspace-default",
         ),
+        app_login_url=app_login_url,
+        password_reset_redirect_url=_get_config_value(
+            "SUPABASE_PASSWORD_RESET_REDIRECT_URL",
+            "PASSWORD_RESET_REDIRECT_URL",
+            default=app_login_url,
+        ),
         supabase_url=_get_config_value("SUPABASE_URL").rstrip("/"),
         supabase_key=_pick_supabase_key(),
+        sendgrid_api_key=_get_config_value("SENDGRID_API_KEY"),
+        sendgrid_from_email=_get_config_value("SENDGRID_FROM_EMAIL", "EMAIL_FROM"),
         groq_api_key=_get_config_value("GROQ_API_KEY"),
         groq_model=_get_config_value("GROQ_MODEL", default="llama-3.1-70b-versatile"),
         groq_user_agent=_get_config_value(
