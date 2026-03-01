@@ -7,6 +7,7 @@ import time
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -224,21 +225,61 @@ class DocumentService:
         retention_until = (datetime.now(timezone.utc) + timedelta(days=retention_days)).isoformat()
         bucket_name = self.repo.get_tenant_bucket(tenant_id)
 
-        perceptual_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
-        received_at = datetime.now(timezone.utc).isoformat()
-
         m = dict(metadata or {})
-        m.setdefault(
-            "ingestion",
+        ingestion = dict(m.get("ingestion") or {})
+
+        source = str(ingestion.get("source") or m.get("source") or "ONLINE_PORTAL")
+        if source not in {"ONLINE_PORTAL", "SERVICE_CENTER", "BATCH_UPLOAD", "API"}:
+            source = "ONLINE_PORTAL"
+
+        submitted_by_raw = ingestion.get("submitted_by")
+        if isinstance(submitted_by_raw, dict):
+            actor_type = str(submitted_by_raw.get("actor_type") or "OPERATOR").upper()
+            if actor_type not in {"CITIZEN", "OPERATOR", "SYSTEM"}:
+                actor_type = "OPERATOR"
+            actor_id = str(submitted_by_raw.get("actor_id") or officer_id)
+        elif isinstance(submitted_by_raw, str) and submitted_by_raw.strip():
+            actor_type = "OPERATOR"
+            actor_id = submitted_by_raw.strip()
+        else:
+            actor_type = "OPERATOR"
+            actor_id = officer_id
+
+        received_at = str(ingestion.get("received_at") or datetime.now(timezone.utc).isoformat())
+        original_file_uri = ingestion.get("original_file_uri") or m.get("original_file_uri")
+
+        perceptual_hash = str(ingestion.get("perceptual_hash") or "").strip()
+        if not perceptual_hash:
+            try:
+                if isinstance(original_file_uri, str) and original_file_uri:
+                    candidate = Path(original_file_uri)
+                    if candidate.exists() and candidate.is_file():
+                        perceptual_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            except Exception:
+                perceptual_hash = ""
+
+        if not perceptual_hash:
+            if raw_text:
+                perceptual_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+            else:
+                perceptual_hash = hashlib.sha256(file_name.encode("utf-8")).hexdigest()
+
+        dedup_matches = ingestion.get("dedup_matches")
+        if not isinstance(dedup_matches, list):
+            dedup_matches = []
+
+        ingestion.update(
             {
-                "source": m.get("source", "ONLINE_PORTAL"),
-                "submitted_by": {"actor_type": "OPERATOR", "actor_id": officer_id},
+                "source": source,
+                "submitted_by": {"actor_type": actor_type, "actor_id": actor_id},
                 "received_at": received_at,
-                "original_file_uri": m.get("original_file_uri"),
+                "original_file_uri": original_file_uri,
                 "perceptual_hash": perceptual_hash,
-                "dedup_matches": [],
-            },
+                "dedup_matches": dedup_matches,
+            }
         )
+        m["ingestion"] = ingestion
+
         m.setdefault(
             "state_history",
             [
@@ -1207,7 +1248,6 @@ class DocumentService:
                 "submitted_by": {"actor_type": "CITIZEN", "actor_id": citizen_id},
                 "received_at": datetime.now(timezone.utc).isoformat(),
                 "original_file_uri": payload.get("original_file_uri"),
-                "perceptual_hash": None,
                 "dedup_matches": [],
             },
         )

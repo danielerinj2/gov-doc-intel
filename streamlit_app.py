@@ -780,51 +780,81 @@ def _render_intake_processing(
         with c2:
             hint_doc_type = st.selectbox("Document type hint", DOC_TYPE_OPTIONS, index=0, help="Pre-maps to a template. Leave AUTO if unsure.")
 
+        file_sig = ""
+        fallback_required = False
+        if uploaded is not None:
+            file_sig = f"{uploaded.name}:{getattr(uploaded, 'size', 0)}"
+            fallback_required = bool(
+                st.session_state.get("portal_fallback_required")
+                and st.session_state.get("portal_fallback_file") == file_sig
+            )
+
         with st.form("intake_form_online"):
-            f1, f2 = st.columns(2)
-            with f1:
-                citizen_id = st.text_input("Citizen ID", value="citizen-001")
-            with f2:
-                file_name = st.text_input("File name", value="portal_submission.txt")
-            prefilled_json = st.text_area("Pre-filled form data (JSON)", value='{"name":"John Doe","document_number":"AB12345"}', height=68)
-            metadata_raw = st.text_area("Metadata (JSON)", value='{"source":"ONLINE_PORTAL"}', height=55)
-            fallback_text = st.text_area("Fallback text (if file has no extractable text)", value="", height=70)
+            citizen_id = st.text_input("Citizen ID *", value="citizen-001")
+            notes = st.text_area("Notes (optional)", value="", height=55)
+            fallback_text = ""
+            if fallback_required:
+                fallback_text = st.text_area(
+                    "Fallback text (required because extraction failed)",
+                    value="",
+                    height=80,
+                )
 
-            bc1, bc2 = st.columns(2)
-            with bc1:
-                create = st.form_submit_button("📤 Create Document", disabled=not can_write, use_container_width=True)
-            with bc2:
-                create_process = st.form_submit_button("⚡ Create + Process", disabled=not can_write, use_container_width=True)
+            submit_process = st.form_submit_button(
+                "⚡ Submit & Process",
+                disabled=not can_write,
+                use_container_width=True,
+            )
 
-        if create or create_process:
-            try:
-                parsed_prefilled = json.loads(prefilled_json) if prefilled_json.strip() else {}
-                metadata = json.loads(metadata_raw) if metadata_raw.strip() else {}
+        if submit_process:
+            if not citizen_id.strip():
+                st.error("Citizen ID is required.")
+            elif uploaded is None:
+                st.error("Please upload a document.")
+            else:
                 upload_text, source_path = _read_uploaded_document(uploaded)
-                raw_text = upload_text or fallback_text or ""
-                final_name = file_name.strip() or (uploaded.name if uploaded else "uploaded_document")
-                ingestion = dict(metadata.get("ingestion") or {})
-                if source_path:
-                    ingestion["original_file_uri"] = source_path
-                ingestion.setdefault("source", "ONLINE_PORTAL")
+                raw_text = (upload_text or "").strip()
+                fallback_clean = (fallback_text or "").strip()
+
+                if not raw_text and not fallback_clean:
+                    st.session_state["portal_fallback_required"] = True
+                    st.session_state["portal_fallback_file"] = file_sig
+                    st.error("No extractable text found. Enter fallback text and submit again.")
+                    return
+
+                st.session_state["portal_fallback_required"] = False
+                st.session_state["portal_fallback_file"] = ""
+
+                final_raw_text = raw_text or fallback_clean
+                ingestion = {
+                    "source": "ONLINE_PORTAL",
+                    "original_file_uri": source_path,
+                }
                 if hint_script != "AUTO-DETECT":
                     ingestion["script_hint"] = hint_script
                 if hint_doc_type != "AUTO-DETECT":
                     ingestion["doc_type_hint"] = hint_doc_type
-                metadata["ingestion"] = ingestion
-                metadata["prefilled_form_data"] = parsed_prefilled
-                created_doc = service.create_document(
-                    tenant_id=tenant_id, citizen_id=citizen_id.strip(),
-                    file_name=final_name, raw_text=raw_text,
-                    officer_id=officer_id, metadata=metadata,
-                )
-                if create_process:
+                metadata = {
+                    "ingestion": ingestion,
+                    "operator_notes": notes.strip() or None,
+                }
+
+                file_name = uploaded.name
+
+                try:
+                    created_doc = service.create_document(
+                        tenant_id=tenant_id, citizen_id=citizen_id.strip(),
+                        file_name=file_name, raw_text=final_raw_text,
+                        officer_id=officer_id, metadata=metadata,
+                    )
                     processed = service.process_document(str(created_doc["id"]), tenant_id, officer_id)
-                    st.markdown(f'<div class="alert-success">✅ Created & processed <code>{processed["id"]}</code> → <strong>{processed.get("state")}</strong></div>', unsafe_allow_html=True)
-                else:
-                    st.markdown(f'<div class="alert-success">✅ Document created: <code>{created_doc["id"]}</code></div>', unsafe_allow_html=True)
-            except Exception as exc:
-                st.error(str(exc))
+                    st.markdown(
+                        f'<div class="alert-success">✅ Created & processed '
+                        f'<code>{processed["id"]}</code> → <strong>{processed.get("state")}</strong></div>',
+                        unsafe_allow_html=True,
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
 
     with tab_center:
         _section("Service Center Capture")
