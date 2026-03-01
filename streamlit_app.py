@@ -185,10 +185,29 @@ st.markdown(
     .diff-old { color:#ef9a9a; text-decoration:line-through; font-family:monospace; }
     .diff-new { color:#a5d6a7; font-family:monospace; font-weight:600; }
 
-    /* ─── Sidebar ─── */
-    section[data-testid="stSidebar"] { background: #0a1929; }
+    /* ─── Sidebar (light, readable) ─── */
+    section[data-testid="stSidebar"] {
+        background: #f3f6fb !important;
+        border-right: 1px solid #d9e2ef;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #1f2a44 !important;
+    }
     section[data-testid="stSidebar"] .stRadio > div { gap: 0.15rem !important; }
     section[data-testid="stSidebar"] label { font-size: 0.82rem !important; }
+    section[data-testid="stSidebar"] .stTextInput input,
+    section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
+    section[data-testid="stSidebar"] .stSelectbox div[role="combobox"],
+    section[data-testid="stSidebar"] .stSelectbox div[role="listbox"] {
+        background: #ffffff !important;
+        color: #1f2a44 !important;
+        border: 1px solid #c9d6e8 !important;
+    }
+    section[data-testid="stSidebar"] button {
+        background: #ffffff !important;
+        color: #1f2a44 !important;
+        border: 1px solid #c9d6e8 !important;
+    }
 
     /* ─── Alert banners ─── */
     .alert-info {
