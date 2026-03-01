@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from app.config import settings
+from app.infra.supabase_client import get_supabase_client
 from app.infra.repositories import (
     ROLE_AUDITOR,
     ROLE_PLATFORM_ADMIN,
@@ -2060,11 +2061,17 @@ AUTH_USER_ID_KEY = "auth_user_id"
 AUTH_EMAIL_KEY = "auth_email"
 
 
-def _auth_client() -> Any | None:
+def _auth_client() -> tuple[Any | None, str | None]:
     client = service.repo.client
-    if client is None:
-        return None
-    return getattr(client, "auth", None)
+    if client is not None:
+        auth = getattr(client, "auth", None)
+        if auth is not None:
+            return auth, None
+
+    fallback_client, fallback_error = get_supabase_client()
+    if fallback_client is None:
+        return None, fallback_error
+    return getattr(fallback_client, "auth", None), fallback_error
 
 
 def _extract_auth_identity(response: Any) -> tuple[str | None, str | None]:
@@ -2105,11 +2112,14 @@ def _render_auth_gate() -> bool:
     st.title("🔐 GovDocIQ Access")
     st.caption("Sign in to access your department workspace.")
 
-    auth = _auth_client()
-    if not service.repo.using_supabase or auth is None:
+    auth, auth_error = _auth_client()
+    if auth is None:
+        detail = auth_error or service.repo.error or "unknown configuration error"
         st.error(
             "Supabase authentication is not available. "
-            "Configure `SUPABASE_URL` and `SUPABASE_KEY` to enable login/signup."
+            "Set `SUPABASE_URL` and one of `SUPABASE_KEY` / `SUPABASE_ANON_KEY` "
+            "in Streamlit secrets. "
+            f"Details: {detail}"
         )
         return False
 
@@ -2257,7 +2267,7 @@ def main() -> None:
 
         if st.button("🚪 Sign Out", use_container_width=True):
             try:
-                auth = _auth_client()
+                auth, _ = _auth_client()
                 if auth is not None:
                     auth.sign_out()
             except Exception as exc:

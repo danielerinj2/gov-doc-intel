@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 import os
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -10,11 +11,69 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _to_secret_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _get_streamlit_secret(*keys: str) -> str:
+    try:
+        import streamlit as st
+    except Exception:
+        return ""
+
+    normalized: list[str] = []
+    for key in keys:
+        normalized.extend([key, key.lower(), key.upper()])
+
+    try:
+        for key in normalized:
+            value = _to_secret_str(st.secrets.get(key))
+            if value:
+                return value
+    except Exception:
+        pass
+
+    # Common nested section: [supabase]
+    try:
+        supabase_section = st.secrets.get("supabase")
+    except Exception:
+        supabase_section = None
+
+    if isinstance(supabase_section, dict):
+        nested = {str(k).lower(): _to_secret_str(v) for k, v in supabase_section.items()}
+        alias_map = {
+            "supabase_url": ["url", "supabase_url"],
+            "supabase_service_key": ["service_key", "service_role_key", "supabase_service_key"],
+            "supabase_key": ["key", "anon_key", "supabase_key", "supabase_anon_key"],
+            "supabase_anon_key": ["anon_key", "key", "supabase_anon_key", "supabase_key"],
+        }
+        for key in keys:
+            for alias in alias_map.get(key.lower(), []):
+                value = nested.get(alias.lower(), "")
+                if value:
+                    return value
+
+    return ""
+
+
+def _get_config_value(*keys: str, default: str = "") -> str:
+    for key in keys:
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    secret_value = _get_streamlit_secret(*keys)
+    if secret_value:
+        return secret_value
+    return default
+
+
 def _pick_supabase_key() -> str:
     return (
-        os.getenv("SUPABASE_SERVICE_KEY", "").strip()
-        or os.getenv("SUPABASE_KEY", "").strip()
-        or os.getenv("SUPABASE_ANON_KEY", "").strip()
+        _get_config_value("SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY")
+        or _get_config_value("SUPABASE_KEY")
+        or _get_config_value("SUPABASE_ANON_KEY")
     )
 
 
@@ -50,31 +109,31 @@ class Settings:
 
 def load_settings() -> Settings:
     return Settings(
-        app_env=os.getenv("APP_ENV", "dev").strip(),
-        supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),
+        app_env=_get_config_value("APP_ENV", default="dev"),
+        supabase_url=_get_config_value("SUPABASE_URL").rstrip("/"),
         supabase_key=_pick_supabase_key(),
-        groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
-        groq_model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile").strip(),
-        groq_user_agent=os.getenv(
+        groq_api_key=_get_config_value("GROQ_API_KEY"),
+        groq_model=_get_config_value("GROQ_MODEL", default="llama-3.1-70b-versatile"),
+        groq_user_agent=_get_config_value(
             "GROQ_USER_AGENT",
-            (
+            default=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             ),
-        ).strip(),
-        event_bus_backend=os.getenv("EVENT_BUS_BACKEND", "inmemory").strip().lower(),
-        kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "").strip(),
-        kafka_topic=os.getenv("KAFKA_TOPIC", "document-events").strip(),
-        pulsar_service_url=os.getenv("PULSAR_SERVICE_URL", "").strip(),
-        pulsar_topic=os.getenv("PULSAR_TOPIC", "persistent://public/default/document-events").strip(),
-        issuer_registry_base_url=os.getenv("ISSUER_REGISTRY_BASE_URL", "").strip().rstrip("/"),
-        issuer_registry_token=os.getenv("ISSUER_REGISTRY_TOKEN", "").strip(),
-        ocr_backend=os.getenv("OCR_BACKEND", "paddleocr").strip().lower(),
-        ocr_default_lang=os.getenv("OCR_DEFAULT_LANG", "eng+hin").strip(),
-        ocr_fast_scan_budget_seconds=float(os.getenv("OCR_FAST_SCAN_BUDGET_SECONDS", "3.0").strip() or 3.0),
-        ocr_fast_max_side_px=int(os.getenv("OCR_FAST_MAX_SIDE_PX", "1280").strip() or 1280),
-        authenticity_backend=os.getenv("AUTHENTICITY_BACKEND", "heuristic").strip().lower(),
-        fraud_calibration_weights=os.getenv("FRAUD_CALIBRATION_WEIGHTS", "").strip(),
+        ),
+        event_bus_backend=_get_config_value("EVENT_BUS_BACKEND", default="inmemory").lower(),
+        kafka_bootstrap_servers=_get_config_value("KAFKA_BOOTSTRAP_SERVERS"),
+        kafka_topic=_get_config_value("KAFKA_TOPIC", default="document-events"),
+        pulsar_service_url=_get_config_value("PULSAR_SERVICE_URL"),
+        pulsar_topic=_get_config_value("PULSAR_TOPIC", default="persistent://public/default/document-events"),
+        issuer_registry_base_url=_get_config_value("ISSUER_REGISTRY_BASE_URL").rstrip("/"),
+        issuer_registry_token=_get_config_value("ISSUER_REGISTRY_TOKEN"),
+        ocr_backend=_get_config_value("OCR_BACKEND", default="paddleocr").lower(),
+        ocr_default_lang=_get_config_value("OCR_DEFAULT_LANG", default="eng+hin"),
+        ocr_fast_scan_budget_seconds=float(_get_config_value("OCR_FAST_SCAN_BUDGET_SECONDS", default="3.0") or 3.0),
+        ocr_fast_max_side_px=int(_get_config_value("OCR_FAST_MAX_SIDE_PX", default="1280") or 1280),
+        authenticity_backend=_get_config_value("AUTHENTICITY_BACKEND", default="heuristic").lower(),
+        fraud_calibration_weights=_get_config_value("FRAUD_CALIBRATION_WEIGHTS"),
     )
 
 
