@@ -1831,6 +1831,110 @@ class Repository:
 
         return self._default_template(tenant_id, dtype)
 
+    def list_tenant_templates(self, tenant_id: str, document_type: str | None = None) -> list[dict[str, Any]]:
+        if self.client:
+            query = (
+                self.client.table("tenant_templates")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .order("document_type", desc=False)
+                .order("version", desc=True)
+            )
+            if document_type:
+                query = query.eq("document_type", document_type.upper())
+            result = exec_query(query)
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows: list[dict[str, Any]] = []
+        for (tid, dtype), items in MemoryStore.tenant_templates.items():
+            if tid != tenant_id:
+                continue
+            if document_type and dtype != document_type.upper():
+                continue
+            rows.extend(items)
+        rows.sort(key=lambda x: (str(x.get("document_type", "")), int(x.get("version", 1))), reverse=False)
+        return rows
+
+    def upsert_tenant_template(
+        self,
+        *,
+        tenant_id: str,
+        document_type: str,
+        template_id: str,
+        version: int,
+        template_version: str,
+        policy_rule_set_id: str | None,
+        config: dict[str, Any],
+        doc_subtype: str | None = None,
+        region_code: str | None = None,
+        description: str | None = None,
+        lifecycle_status: str = "ACTIVE",
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        dtype = document_type.upper()
+        row = {
+            "tenant_id": tenant_id,
+            "document_type": dtype,
+            "doc_subtype": doc_subtype,
+            "region_code": region_code,
+            "description": description,
+            "template_id": template_id,
+            "template_version": template_version,
+            "policy_rule_set_id": policy_rule_set_id,
+            "version": int(version),
+            "is_active": bool(is_active),
+            "config": config or {},
+            "lifecycle_status": lifecycle_status,
+            "effective_from": _now(),
+            "effective_to": None,
+            "created_at": _now(),
+        }
+
+        if self.client:
+            exec_query(
+                self.client.table("tenant_templates").upsert(
+                    row,
+                    on_conflict="tenant_id,document_type,version",
+                )
+            )
+            if is_active:
+                exec_query(
+                    self.client.table("tenant_templates")
+                    .update({"is_active": False})
+                    .eq("tenant_id", tenant_id)
+                    .eq("document_type", dtype)
+                    .neq("version", int(version))
+                )
+            result = exec_query(
+                self.client.table("tenant_templates")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("document_type", dtype)
+                .eq("version", int(version))
+                .limit(1)
+            )
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        key = (tenant_id, dtype)
+        current = MemoryStore.tenant_templates.get(key, [])
+        replaced = False
+        for idx, existing in enumerate(current):
+            if int(existing.get("version", 1)) == int(version):
+                current[idx] = row
+                replaced = True
+                break
+        if not replaced:
+            current.append(row)
+        if is_active:
+            for item in current:
+                if int(item.get("version", 1)) != int(version):
+                    item["is_active"] = False
+        MemoryStore.tenant_templates[key] = current
+        return row
+
     def get_active_rule(self, tenant_id: str, document_type: str) -> dict[str, Any]:
         dtype = (document_type or "UNKNOWN").upper()
         if self.client:
@@ -1858,6 +1962,106 @@ class Repository:
             return row
 
         return self._default_rule(tenant_id, dtype)
+
+    def list_tenant_rules(self, tenant_id: str, document_type: str | None = None) -> list[dict[str, Any]]:
+        if self.client:
+            query = (
+                self.client.table("tenant_rules")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .order("document_type", desc=False)
+                .order("version", desc=True)
+            )
+            if document_type:
+                query = query.eq("document_type", document_type.upper())
+            result = exec_query(query)
+            if result and result.get("data") is not None:
+                return result["data"]
+
+        rows: list[dict[str, Any]] = []
+        for (tid, dtype), items in MemoryStore.tenant_rules.items():
+            if tid != tenant_id:
+                continue
+            if document_type and dtype != document_type.upper():
+                continue
+            rows.extend(items)
+        rows.sort(key=lambda x: (str(x.get("document_type", "")), int(x.get("version", 1))), reverse=False)
+        return rows
+
+    def upsert_tenant_rule(
+        self,
+        *,
+        tenant_id: str,
+        document_type: str,
+        rule_name: str,
+        version: int,
+        rule_set_id: str,
+        min_extract_confidence: float,
+        min_approval_confidence: float,
+        max_approval_risk: float,
+        registry_required: bool,
+        config: dict[str, Any],
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        dtype = document_type.upper()
+        row = {
+            "tenant_id": tenant_id,
+            "document_type": dtype,
+            "rule_set_id": rule_set_id,
+            "rule_name": rule_name,
+            "version": int(version),
+            "is_active": bool(is_active),
+            "min_extract_confidence": float(min_extract_confidence),
+            "min_approval_confidence": float(min_approval_confidence),
+            "max_approval_risk": float(max_approval_risk),
+            "registry_required": bool(registry_required),
+            "config": config or {},
+            "created_at": _now(),
+        }
+
+        if self.client:
+            exec_query(
+                self.client.table("tenant_rules").upsert(
+                    row,
+                    on_conflict="tenant_id,document_type,version",
+                )
+            )
+            if is_active:
+                exec_query(
+                    self.client.table("tenant_rules")
+                    .update({"is_active": False})
+                    .eq("tenant_id", tenant_id)
+                    .eq("document_type", dtype)
+                    .neq("version", int(version))
+                )
+            result = exec_query(
+                self.client.table("tenant_rules")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("document_type", dtype)
+                .eq("version", int(version))
+                .limit(1)
+            )
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        key = (tenant_id, dtype)
+        current = MemoryStore.tenant_rules.get(key, [])
+        replaced = False
+        for idx, existing in enumerate(current):
+            if int(existing.get("version", 1)) == int(version):
+                current[idx] = row
+                replaced = True
+                break
+        if not replaced:
+            current.append(row)
+        if is_active:
+            for item in current:
+                if int(item.get("version", 1)) != int(version):
+                    item["is_active"] = False
+        MemoryStore.tenant_rules[key] = current
+        return row
 
     def get_tenant_bucket(self, tenant_id: str) -> str:
         if self.client:

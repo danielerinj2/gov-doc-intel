@@ -55,7 +55,7 @@ from app.domain.states import DocumentState
 from app.events.backends import build_event_bus
 from app.events.contracts import BRANCH_MODULES, build_event_envelope
 from app.infra.groq_adapter import GroqAdapter
-from app.infra.repositories import ADMIN_ROLES, REVIEW_ROLES, WRITER_ROLES, Repository
+from app.infra.repositories import ADMIN_ROLES, REVIEW_ROLES, ROLE_TENANT_OPERATOR, WRITER_ROLES, Repository
 from app.pipeline.dag import DAG, Node
 from app.pipeline.level2_modules import (
     ExplainabilityAuditModule,
@@ -111,6 +111,100 @@ class DocumentService:
     def create_tenant_api_key(self, tenant_id: str, officer_id: str, key_label: str, raw_key: str) -> dict[str, Any]:
         self._authorize(officer_id, tenant_id, ADMIN_ROLES)
         return self.repo.create_tenant_api_key(tenant_id, key_label, raw_key)
+
+    def list_officers(self, tenant_id: str, officer_id: str) -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, ADMIN_ROLES)
+        return self.repo.list_officers(tenant_id)
+
+    def upsert_officer_account(
+        self,
+        *,
+        tenant_id: str,
+        admin_officer_id: str,
+        target_officer_id: str,
+        role: str,
+        status: str = "ACTIVE",
+    ) -> dict[str, Any]:
+        self._authorize(admin_officer_id, tenant_id, ADMIN_ROLES)
+        officer = Officer(
+            officer_id=target_officer_id,
+            tenant_id=tenant_id,
+            role=role,
+            status=status,
+        )
+        return self.repo.upsert_officer(officer)
+
+    def list_tenant_templates(self, tenant_id: str, officer_id: str, document_type: str | None = None) -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, ADMIN_ROLES)
+        return self.repo.list_tenant_templates(tenant_id, document_type=document_type)
+
+    def save_tenant_template(
+        self,
+        *,
+        tenant_id: str,
+        officer_id: str,
+        document_type: str,
+        template_id: str,
+        version: int,
+        template_version: str,
+        policy_rule_set_id: str | None,
+        config: dict[str, Any],
+        doc_subtype: str | None = None,
+        region_code: str | None = None,
+        description: str | None = None,
+        lifecycle_status: str = "ACTIVE",
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, ADMIN_ROLES)
+        return self.repo.upsert_tenant_template(
+            tenant_id=tenant_id,
+            document_type=document_type,
+            template_id=template_id,
+            version=version,
+            template_version=template_version,
+            policy_rule_set_id=policy_rule_set_id,
+            config=config,
+            doc_subtype=doc_subtype,
+            region_code=region_code,
+            description=description,
+            lifecycle_status=lifecycle_status,
+            is_active=is_active,
+        )
+
+    def list_tenant_rules(self, tenant_id: str, officer_id: str, document_type: str | None = None) -> list[dict[str, Any]]:
+        self._authorize(officer_id, tenant_id, ADMIN_ROLES)
+        return self.repo.list_tenant_rules(tenant_id, document_type=document_type)
+
+    def save_tenant_rule(
+        self,
+        *,
+        tenant_id: str,
+        officer_id: str,
+        document_type: str,
+        rule_name: str,
+        version: int,
+        rule_set_id: str,
+        min_extract_confidence: float,
+        min_approval_confidence: float,
+        max_approval_risk: float,
+        registry_required: bool,
+        config: dict[str, Any],
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, ADMIN_ROLES)
+        return self.repo.upsert_tenant_rule(
+            tenant_id=tenant_id,
+            document_type=document_type,
+            rule_name=rule_name,
+            version=version,
+            rule_set_id=rule_set_id,
+            min_extract_confidence=min_extract_confidence,
+            min_approval_confidence=min_approval_confidence,
+            max_approval_risk=max_approval_risk,
+            registry_required=registry_required,
+            config=config,
+            is_active=is_active,
+        )
 
     def create_document(
         self,
@@ -1082,6 +1176,85 @@ class DocumentService:
         for row in rows:
             writer.writerow({k: row.get(k) for k in columns})
         return buffer.getvalue()
+
+    def citizen_submit_document(
+        self,
+        *,
+        tenant_id: str,
+        citizen_id: str,
+        file_name: str,
+        raw_text: str,
+        metadata: dict[str, Any] | None = None,
+        process_now: bool = True,
+    ) -> dict[str, Any]:
+        system_actor_id = f"citizen-intake-{tenant_id}"
+        try:
+            existing = self.repo.get_officer(system_actor_id)
+            if not existing:
+                self.register_officer(system_actor_id, tenant_id, ROLE_TENANT_OPERATOR)
+        except Exception:
+            # Best effort for local/demo mode.
+            self.register_officer(system_actor_id, tenant_id, ROLE_TENANT_OPERATOR)
+
+        payload = dict(metadata or {})
+        payload.setdefault("source", "ONLINE_PORTAL")
+        payload.setdefault(
+            "ingestion",
+            {
+                "source": "ONLINE_PORTAL",
+                "submitted_by": {"actor_type": "CITIZEN", "actor_id": citizen_id},
+                "received_at": datetime.now(timezone.utc).isoformat(),
+                "original_file_uri": payload.get("original_file_uri"),
+                "perceptual_hash": None,
+                "dedup_matches": [],
+            },
+        )
+
+        row = self.create_document(
+            tenant_id=tenant_id,
+            citizen_id=citizen_id,
+            file_name=file_name,
+            raw_text=raw_text,
+            officer_id=system_actor_id,
+            metadata=payload,
+        )
+        if process_now:
+            row = self.process_document(str(row["id"]), tenant_id, system_actor_id)
+        return row
+
+    def list_citizen_documents(self, tenant_id: str, citizen_id: str) -> list[dict[str, Any]]:
+        docs = self.repo.list_documents(tenant_id)
+        rows = [d for d in docs if str(d.get("citizen_id")) == citizen_id]
+        return sorted(rows, key=lambda x: str(x.get("created_at", "")), reverse=True)
+
+    def citizen_open_dispute(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        citizen_id: str,
+        reason: str,
+        evidence_note: str,
+    ) -> dict[str, Any]:
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            raise ValueError("Document not found")
+        if str(doc.get("citizen_id")) != citizen_id:
+            raise PermissionError("Citizen cannot dispute another applicant's document")
+
+        system_actor_id = f"citizen-dispute-{tenant_id}"
+        existing = self.repo.get_officer(system_actor_id)
+        if not existing:
+            self.register_officer(system_actor_id, tenant_id, ROLE_TENANT_OPERATOR)
+
+        return self.open_dispute(
+            document_id=document_id,
+            reason=reason,
+            evidence_note=evidence_note,
+            tenant_id=tenant_id,
+            officer_id=system_actor_id,
+            citizen_actor_id=citizen_id,
+        )
 
     def get_citizen_case_view(self, tenant_id: str, document_id: str, citizen_id: str) -> dict[str, Any]:
         doc = self.repo.get_document(document_id, tenant_id=tenant_id)

@@ -31,8 +31,10 @@ st.set_page_config(page_title="Gov Document Intelligence", page_icon="📄", lay
 service = DocumentService()
 governance = GovernanceService(service.repo)
 offline_service = OfflineService(service)
+ROLE_CITIZEN_PORTAL = "citizen_portal"
 
 ALL_ROLES = [
+    ROLE_CITIZEN_PORTAL,
     ROLE_TENANT_OPERATOR,
     ROLE_TENANT_OFFICER,
     ROLE_TENANT_SENIOR_OFFICER,
@@ -67,6 +69,7 @@ ADMIN_ROLES = {ROLE_TENANT_ADMIN, ROLE_ADMIN}
 AUDIT_ROLES = {ROLE_TENANT_AUDITOR, ROLE_AUDITOR, ROLE_TENANT_ADMIN, ROLE_ADMIN}
 PLATFORM_ROLES = {ROLE_PLATFORM_AUDITOR, ROLE_PLATFORM_SUPER_ADMIN}
 SENSITIVE_VIEW_ROLES = {
+    ROLE_CITIZEN_PORTAL,
     ROLE_TENANT_OPERATOR,
     ROLE_TENANT_OFFICER,
     ROLE_TENANT_SENIOR_OFFICER,
@@ -77,6 +80,7 @@ SENSITIVE_VIEW_ROLES = {
 }
 
 PAGES = [
+    "Citizen Portal (Upload & Status)",
     "Intake & Processing",
     "Review Workbench",
     "Dispute Desk",
@@ -90,6 +94,7 @@ PAGES = [
 ]
 
 PAGE_ACCESS = {
+    "Citizen Portal (Upload & Status)": {ROLE_CITIZEN_PORTAL},
     "Intake & Processing": WRITE_ROLES | AUDIT_ROLES,
     "Review Workbench": REVIEW_ROLES | AUDIT_ROLES,
     "Dispute Desk": REVIEW_ROLES | AUDIT_ROLES,
@@ -175,8 +180,17 @@ def _render_env_status() -> None:
         )
 
 
-def _load_docs(tenant_id: str, officer_id: str) -> tuple[list[dict[str, Any]], str | None]:
+def _load_docs(
+    tenant_id: str,
+    officer_id: str,
+    role: str,
+    citizen_id: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
     try:
+        if role == ROLE_CITIZEN_PORTAL:
+            if not citizen_id:
+                return [], None
+            return service.list_citizen_documents(tenant_id, citizen_id), None
         return service.list_documents(tenant_id, officer_id), None
     except Exception as exc:
         return [], str(exc)
@@ -250,7 +264,32 @@ def _render_stakeholder_snapshot(
         return
 
     derived = dict(selected_doc.get("derived") or {})
-    events = service.list_events(str(selected_doc.get("id")), tenant_id, officer_id)
+    events: list[dict[str, Any]] = []
+    if role != ROLE_CITIZEN_PORTAL:
+        try:
+            events = service.list_events(str(selected_doc.get("id")), tenant_id, officer_id)
+        except Exception:
+            events = []
+
+    if role == ROLE_CITIZEN_PORTAL:
+        try:
+            view = service.get_citizen_case_view(
+                tenant_id=tenant_id,
+                document_id=str(selected_doc.get("id")),
+                citizen_id=str(selected_doc.get("citizen_id", "")),
+            )
+            st.write(
+                {
+                    "status": view.get("state"),
+                    "decision": view.get("decision"),
+                    "rejection_reason_plain": view.get("explanation_text"),
+                    "next_steps": view.get("next_steps"),
+                    "dispute_option": "AVAILABLE",
+                }
+            )
+        except Exception as exc:
+            st.error(str(exc))
+        return
 
     if role in {ROLE_TENANT_OPERATOR, ROLE_CASE_WORKER}:
         st.write(
@@ -332,6 +371,101 @@ def _render_stakeholder_snapshot(
         )
 
 
+def _render_citizen_portal(
+    *,
+    tenant_id: str,
+    citizen_id: str,
+    docs: list[dict[str, Any]],
+    selected_doc: dict[str, Any] | None,
+) -> None:
+    _render_journey(
+        "User Journey - Citizen Online",
+        [
+            "submit",
+            "RECEIVED",
+            "pipeline",
+            "auto decision or review",
+            "notified",
+            "dispute if rejected",
+        ],
+    )
+
+    st.markdown("### C1 - Application and Document Upload")
+    with st.form("citizen_upload_form"):
+        file_name = st.text_input("File name", value="citizen_upload.txt")
+        raw_text = st.text_area("Document text / OCR seed", value="Name: Citizen Demo\nID: DEMO123", height=100)
+        metadata_raw = st.text_area(
+            "Metadata JSON",
+            value='{"source":"ONLINE_PORTAL","application_id":"app-001"}',
+            height=70,
+        )
+        process_now = st.checkbox("Process immediately", value=True)
+        submit = st.form_submit_button("Submit Application", use_container_width=True)
+    if submit:
+        try:
+            metadata = json.loads(metadata_raw) if metadata_raw.strip() else {}
+            created = service.citizen_submit_document(
+                tenant_id=tenant_id,
+                citizen_id=citizen_id,
+                file_name=file_name.strip(),
+                raw_text=raw_text,
+                metadata=metadata,
+                process_now=process_now,
+            )
+            st.success(f"Submitted document: {created.get('id')} (state={created.get('state')})")
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.markdown("### C2 - Application Status and Notifications")
+    if docs:
+        cdf = pd.DataFrame(docs)
+        cols = [c for c in ["id", "state", "decision", "confidence", "risk_score", "created_at", "updated_at"] if c in cdf.columns]
+        st.dataframe(cdf[cols], use_container_width=True, hide_index=True)
+    else:
+        st.info("No submitted documents found for this citizen.")
+
+    if not selected_doc:
+        return
+
+    try:
+        case_view = service.get_citizen_case_view(
+            tenant_id=tenant_id,
+            document_id=str(selected_doc.get("id")),
+            citizen_id=citizen_id,
+        )
+        st.write(case_view)
+    except Exception as exc:
+        st.error(str(exc))
+        return
+
+    notifications = service.repo.list_notifications(tenant_id, document_id=str(selected_doc.get("id")))
+    notifications = [n for n in notifications if str(n.get("citizen_id", "")) == citizen_id]
+    st.markdown("### Notification History")
+    if notifications:
+        st.dataframe(pd.DataFrame(notifications), use_container_width=True, hide_index=True)
+    else:
+        st.info("No notifications yet.")
+
+    if str(selected_doc.get("state")) == "REJECTED":
+        st.markdown("### Raise Dispute")
+        with st.form("citizen_dispute_form"):
+            reason = st.text_input("Reason", value="I want re-verification")
+            evidence_note = st.text_input("Evidence note", value="Please review uploaded evidence")
+            submit_dispute = st.form_submit_button("Submit Dispute", use_container_width=True)
+        if submit_dispute:
+            try:
+                row = service.citizen_open_dispute(
+                    tenant_id=tenant_id,
+                    document_id=str(selected_doc.get("id")),
+                    citizen_id=citizen_id,
+                    reason=reason.strip(),
+                    evidence_note=evidence_note.strip(),
+                )
+                st.success(f"Dispute submitted: {row.get('id')}")
+            except Exception as exc:
+                st.error(str(exc))
+
+
 def _render_intake_processing(
     *,
     role: str,
@@ -398,6 +532,33 @@ def _render_intake_processing(
         st.info("No documents yet for this tenant.")
     else:
         df = pd.DataFrame(docs)
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            state_filter = st.selectbox("Filter by state", ["ALL"] + sorted({str(x) for x in df.get("state", []).tolist()}), index=0)
+        with f2:
+            min_risk = st.slider("Min risk score", min_value=0.0, max_value=1.0, value=0.0, step=0.05)
+        with f3:
+            sla_only = st.checkbox("SLA nearing breach (<=24h)", value=False)
+
+        if state_filter != "ALL":
+            df = df[df["state"] == state_filter]
+        if "risk_score" in df.columns:
+            df = df[df["risk_score"].fillna(0.0) >= float(min_risk)]
+        if sla_only:
+            now = datetime.now(timezone.utc)
+            policy = service.repo.get_tenant_policy(tenant_id)
+            review_sla_days = int(policy.get("review_sla_days", 3))
+            due_cutoff = now + timedelta(hours=24)
+            flags: list[bool] = []
+            for _, row in df.iterrows():
+                created_at = _safe_dt(row.get("created_at"))
+                if not created_at:
+                    flags.append(False)
+                    continue
+                due_at = created_at + timedelta(days=review_sla_days)
+                flags.append(due_at <= due_cutoff and str(row.get("state")) in {"WAITING_FOR_REVIEW", "REVIEW_IN_PROGRESS"})
+            df = df[pd.Series(flags, index=df.index)]
+
         cols = [
             c
             for c in [
@@ -844,6 +1005,126 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
             except Exception as exc:
                 st.error(str(exc))
 
+        st.markdown("### A1 - Template Management")
+        try:
+            tpl_rows = service.list_tenant_templates(tenant_id, officer_id)
+            if tpl_rows:
+                st.dataframe(pd.DataFrame(tpl_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No tenant templates found.")
+        except Exception as exc:
+            st.error(str(exc))
+
+        with st.form("template_upsert_form"):
+            doc_type = st.text_input("Document type", value="AADHAAR_CARD")
+            template_id = st.text_input("Template ID", value="aadhaar_template_default")
+            template_ver = st.text_input("Template version", value="2025.1.0")
+            template_schema_ver = st.number_input("Template config version", min_value=1, value=1, step=1)
+            rule_set_ref = st.text_input("Policy rule_set_id", value="RULESET_AADHAAR_DEFAULT")
+            lifecycle = st.selectbox("Lifecycle status", ["ACTIVE", "DEPRECATED", "RETIRED"], index=0)
+            active = st.checkbox("Active template", value=True)
+            cfg_raw = st.text_area("Template config JSON", value='{"fields":[],"visual_markers":[]}', height=80)
+            save_tpl = st.form_submit_button("Save Template", use_container_width=True)
+        if save_tpl:
+            try:
+                cfg = json.loads(cfg_raw) if cfg_raw.strip() else {}
+                row = service.save_tenant_template(
+                    tenant_id=tenant_id,
+                    officer_id=officer_id,
+                    document_type=doc_type.strip(),
+                    template_id=template_id.strip(),
+                    version=int(template_schema_ver),
+                    template_version=template_ver.strip(),
+                    policy_rule_set_id=rule_set_ref.strip() or None,
+                    config=cfg,
+                    lifecycle_status=lifecycle,
+                    is_active=active,
+                )
+                st.success(f"Template saved: {row.get('template_id')} v{row.get('version')}")
+            except Exception as exc:
+                st.error(str(exc))
+
+        st.markdown("### A1 - Rule Management")
+        try:
+            rule_rows = service.list_tenant_rules(tenant_id, officer_id)
+            if rule_rows:
+                st.dataframe(pd.DataFrame(rule_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No tenant rules found.")
+        except Exception as exc:
+            st.error(str(exc))
+
+        with st.form("rule_upsert_form"):
+            rule_doc_type = st.text_input("Rule doc type", value="AADHAAR_CARD")
+            rule_name = st.text_input("Rule name", value="rule_aadhaar_default")
+            rule_set_id = st.text_input("Rule set ID", value="RULESET_AADHAAR_DEFAULT")
+            rule_version = st.number_input("Rule version", min_value=1, value=1, step=1)
+            min_extract = st.slider("Min extract confidence", 0.0, 1.0, 0.6, 0.01)
+            min_approval = st.slider("Min approval confidence", 0.0, 1.0, 0.72, 0.01)
+            max_risk = st.slider("Max approval risk", 0.0, 1.0, 0.35, 0.01)
+            reg_required = st.checkbox("Registry required", value=True)
+            rule_active = st.checkbox("Active rule", value=True)
+            rule_cfg_raw = st.text_area("Rule config JSON", value='{"checks":[]}', height=80)
+            save_rule = st.form_submit_button("Save Rule", use_container_width=True)
+        if save_rule:
+            try:
+                rule_cfg = json.loads(rule_cfg_raw) if rule_cfg_raw.strip() else {}
+                row = service.save_tenant_rule(
+                    tenant_id=tenant_id,
+                    officer_id=officer_id,
+                    document_type=rule_doc_type.strip(),
+                    rule_name=rule_name.strip(),
+                    version=int(rule_version),
+                    rule_set_id=rule_set_id.strip(),
+                    min_extract_confidence=float(min_extract),
+                    min_approval_confidence=float(min_approval),
+                    max_approval_risk=float(max_risk),
+                    registry_required=bool(reg_required),
+                    config=rule_cfg,
+                    is_active=bool(rule_active),
+                )
+                st.success(f"Rule saved: {row.get('rule_name')} v{row.get('version')}")
+            except Exception as exc:
+                st.error(str(exc))
+
+        st.markdown("### A2 - User and Role Management")
+        try:
+            officers = service.list_officers(tenant_id, officer_id)
+            if officers:
+                st.dataframe(pd.DataFrame(officers), use_container_width=True, hide_index=True)
+            else:
+                st.info("No officers configured.")
+        except Exception as exc:
+            st.error(str(exc))
+
+        with st.form("officer_upsert_form"):
+            target_id = st.text_input("Officer ID", value="officer-new-001")
+            target_role = st.selectbox(
+                "Officer role",
+                [
+                    ROLE_TENANT_OPERATOR,
+                    ROLE_TENANT_OFFICER,
+                    ROLE_TENANT_SENIOR_OFFICER,
+                    ROLE_TENANT_ADMIN,
+                    ROLE_TENANT_AUDITOR,
+                ],
+                index=0,
+            )
+            target_status = st.selectbox("Officer status", ["ACTIVE", "INACTIVE"], index=0)
+            save_officer = st.form_submit_button("Save Officer Account", use_container_width=True)
+        if save_officer:
+            try:
+                row = service.upsert_officer_account(
+                    tenant_id=tenant_id,
+                    admin_officer_id=officer_id,
+                    target_officer_id=target_id.strip(),
+                    role=target_role,
+                    status=target_status,
+                )
+                st.success(f"Officer saved: {row.get('officer_id')} ({row.get('role')}, {row.get('status')})")
+            except Exception as exc:
+                st.error(str(exc))
+
         if st.button("Seed Part-5 Baseline", use_container_width=True):
             try:
                 res = governance.seed_part5_baseline(tenant_id, officer_id)
@@ -882,6 +1163,15 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
                 st.json(governance.cross_tenant_audit_overview(officer_id))
             except Exception as exc:
                 st.error(str(exc))
+    elif role in AUDIT_ROLES and role not in ADMIN_ROLES:
+        st.markdown("### Tenant Auditor Read-Only Config View")
+        st.write(
+            {
+                "templates": service.repo.list_tenant_templates(tenant_id),
+                "rules": service.repo.list_tenant_rules(tenant_id),
+                "officers": service.repo.list_officers(tenant_id),
+            }
+        )
 
 
 def _render_ops_dr_monitor(*, role: str, tenant_id: str, officer_id: str) -> None:
@@ -900,6 +1190,19 @@ def _render_ops_dr_monitor(*, role: str, tenant_id: str, officer_id: str) -> Non
         )
     except Exception as exc:
         st.error(str(exc))
+
+    if role in PLATFORM_ROLES:
+        st.markdown("### P1 - Platform Monitoring and Tenants")
+        tenants = service.repo.list_platform_tenants()
+        if tenants:
+            st.dataframe(pd.DataFrame(tenants), use_container_width=True, hide_index=True)
+        else:
+            st.info("No tenant rows available.")
+        try:
+            overview = governance.cross_tenant_audit_overview(officer_id)
+            st.write({"cross_tenant_overview": overview})
+        except Exception as exc:
+            st.error(str(exc))
 
     try:
         docs = service.list_documents(tenant_id, officer_id)
@@ -994,6 +1297,25 @@ def _render_integrations(*, role: str, tenant_id: str, officer_id: str) -> None:
         {"method": "POST", "path": "/tenants/{tenant_id}/offline/sync", "purpose": "offline sync"},
     ]
     st.dataframe(pd.DataFrame(endpoints), use_container_width=True, hide_index=True)
+
+    st.markdown("### Main Inputs and Outputs")
+    st.write(
+        {
+            "inputs": [
+                "Document files (image/PDF/text)",
+                "tenant_id, citizen_id, application metadata",
+                "Officer decisions and corrections",
+                "Template/rule/policy configuration",
+            ],
+            "outputs": [
+                "document_record JSON (versioned)",
+                "Approval/Reject/Review state transitions",
+                "Field extraction + validation statuses",
+                "Fraud/authenticity/issuer signals",
+                "Notifications, webhooks, CSV export",
+            ],
+        }
+    )
 
     if role in ADMIN_ROLES:
         st.markdown("### Create Tenant API Key")
@@ -1124,10 +1446,15 @@ def main() -> None:
     with st.sidebar:
         st.header("Access Context")
         tenant_id = st.text_input("Tenant ID", value="dept-education").strip()
-        officer_id = st.text_input("Actor / Officer ID", value="officer-001").strip()
         role = st.selectbox("Role", ALL_ROLES, index=0)
+        if role == ROLE_CITIZEN_PORTAL:
+            citizen_portal_id = st.text_input("Citizen ID", value="citizen-001").strip()
+            officer_id = f"citizen-portal-{tenant_id}"
+        else:
+            citizen_portal_id = ""
+            officer_id = st.text_input("Actor / Officer ID", value="officer-001").strip()
 
-        if st.button("Register / Bind Officer", use_container_width=True):
+        if role != ROLE_CITIZEN_PORTAL and st.button("Register / Bind Officer", use_container_width=True):
             try:
                 row = service.register_officer(officer_id, tenant_id, role)
                 st.success(f"Bound {row['officer_id']} -> {row['tenant_id']} ({row['role']})")
@@ -1149,7 +1476,12 @@ def main() -> None:
         accessible_pages = [p for p in PAGES if role in PAGE_ACCESS[p]]
         page = st.radio("App Sections", accessible_pages, index=0)
 
-        docs, docs_error = _load_docs(tenant_id, officer_id)
+        docs, docs_error = _load_docs(
+            tenant_id=tenant_id,
+            officer_id=officer_id,
+            role=role,
+            citizen_id=citizen_portal_id if role == ROLE_CITIZEN_PORTAL else None,
+        )
         if docs_error:
             st.error(docs_error)
 
@@ -1177,7 +1509,14 @@ def main() -> None:
 
     st.divider()
 
-    if page == "Intake & Processing":
+    if page == "Citizen Portal (Upload & Status)":
+        _render_citizen_portal(
+            tenant_id=tenant_id,
+            citizen_id=citizen_portal_id,
+            docs=docs,
+            selected_doc=selected_doc,
+        )
+    elif page == "Intake & Processing":
         _render_intake_processing(role=role, tenant_id=tenant_id, officer_id=officer_id, docs=docs, selected_doc=selected_doc)
     elif page == "Review Workbench":
         _render_review_workbench(

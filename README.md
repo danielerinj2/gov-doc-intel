@@ -188,6 +188,7 @@ Unified records are persisted per `document_id + job_id` in `document_records.re
 1. Use sidebar to set `Tenant ID` and `Officer ID`.
 2. Click `Register / Bind Officer` once.
 3. Choose your role and navigate role-aware sections:
+   - `Citizen Portal (Upload & Status)` (public journey simulation)
    - `Intake & Processing`
    - `Review Workbench`
    - `Dispute Desk`
@@ -199,6 +200,10 @@ Unified records are persisted per `document_id + job_id` in `document_records.re
    - `Integrations (API/Webhook/Export)`
    - `Offline Sync Console`
 4. Select a document in sidebar to load shared `Document Header` and role-specific fields.
+5. Tenant admin users can manage:
+   - `A1` Template and Rule Management (versioned)
+   - `A2` User and Role Management (officer accounts)
+   - `A3` Governance/KPI controls and policy updates
 
 ## Verify env quickly
 ```bash
