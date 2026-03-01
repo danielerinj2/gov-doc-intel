@@ -5,6 +5,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 import streamlit as st
@@ -2112,12 +2113,91 @@ def _auth_client() -> tuple[Any | None, str | None]:
 
 def _friendly_auth_error(exc: Exception) -> str:
     msg = str(exc)
-    if "invalid api key" in msg.lower():
+    msg_lc = msg.lower()
+    if "invalid api key" in msg_lc:
         return (
             "Supabase auth key is invalid. Configure `SUPABASE_ANON_KEY` "
             "(or `SUPABASE_KEY`) in Streamlit secrets."
         )
+    if "email not confirmed" in msg_lc or "email_not_confirmed" in msg_lc:
+        return "Email is not verified yet. Open your verification link, then sign in."
     return msg
+
+
+def _parse_supabase_callback_url(value: str) -> dict[str, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return {}
+    parsed = urlparse(raw)
+    out: dict[str, str] = {}
+    for part in (parsed.query, parsed.fragment):
+        if not part:
+            continue
+        values = parse_qs(part, keep_blank_values=False)
+        for key in (
+            "access_token",
+            "refresh_token",
+            "token_type",
+            "type",
+            "token_hash",
+            "code",
+        ):
+            if key in values and values[key]:
+                out[key] = str(values[key][0])
+    return out
+
+
+def _apply_auth_callback(auth: Any, callback_url: str) -> tuple[bool, str]:
+    values = _parse_supabase_callback_url(callback_url)
+    if not values:
+        return False, "No auth tokens found in callback URL."
+
+    access_token = values.get("access_token", "").strip()
+    refresh_token = values.get("refresh_token", "").strip()
+    token_hash = values.get("token_hash", "").strip()
+    otp_type = values.get("type", "").strip() or "signup"
+
+    if access_token and refresh_token:
+        errors: list[str] = []
+        calls = [
+            lambda: auth.set_session(access_token, refresh_token),
+            lambda: auth.set_session({"access_token": access_token, "refresh_token": refresh_token}),
+        ]
+        for call in calls:
+            try:
+                response = call()
+                user_id, user_email = _extract_auth_identity(response)
+                if not user_id:
+                    try:
+                        user = auth.get_user(access_token)
+                        user_id, user_email = _extract_auth_identity(user)
+                    except Exception:
+                        pass
+                if user_id:
+                    _set_auth_identity(user_id, user_email)
+                    return True, "Authentication session established."
+            except Exception as exc:
+                errors.append(str(exc))
+        return False, errors[-1] if errors else "Failed to apply callback session."
+
+    if token_hash:
+        errors: list[str] = []
+        calls = [
+            lambda: auth.verify_otp({"token_hash": token_hash, "type": otp_type}),
+            lambda: auth.verify_otp(token_hash=token_hash, type=otp_type),
+        ]
+        for call in calls:
+            try:
+                response = call()
+                user_id, user_email = _extract_auth_identity(response)
+                if user_id:
+                    _set_auth_identity(user_id, user_email)
+                    return True, "Email verified and signed in."
+            except Exception as exc:
+                errors.append(str(exc))
+        return False, errors[-1] if errors else "Failed to verify token hash."
+
+    return False, "Callback URL is missing required auth tokens."
 
 
 def _extract_auth_identity(response: Any) -> tuple[str | None, str | None]:
@@ -2269,6 +2349,24 @@ def _render_auth_gate() -> bool:
                 st.error(_friendly_auth_error(exc))
 
         with st.expander("Need help signing in?", expanded=False):
+            with st.form("auth_complete_from_link_form"):
+                callback_url = st.text_input(
+                    "Paste signup/reset callback URL",
+                    value="",
+                    placeholder="https://...#access_token=...",
+                )
+                submit_callback = st.form_submit_button(
+                    "Complete Authentication From Link",
+                    use_container_width=True,
+                )
+            if submit_callback:
+                ok, detail = _apply_auth_callback(auth, callback_url)
+                if ok:
+                    st.success(detail)
+                    st.rerun()
+                else:
+                    st.error(_friendly_auth_error(Exception(detail)))
+
             recovery_action = st.selectbox(
                 "Recovery action",
                 ["Select", "Forgot Password", "Forgot Username"],
