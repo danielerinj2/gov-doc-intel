@@ -36,6 +36,12 @@ Apply schema:
 -- run supabase/schema.sql
 ```
 
+If you see `PGRST204` for missing columns (for example `classification_output`), run:
+
+```sql
+-- run supabase/patch_add_missing_document_columns.sql
+```
+
 ## Environment
 
 Use `.env.example` as reference. Primary keys used by app:

@@ -186,8 +186,16 @@ def build_repository() -> tuple[DocumentRepository, bool, str | None]:
         return InMemoryRepository(), False, "Supabase client unavailable; using in-memory repository."
 
     try:
-        # Lightweight connectivity check
-        client.table("documents").select("id").limit(1).execute()
+        # Connectivity + schema compatibility check (required columns used by the app).
+        client.table("documents").select(
+            "id,ocr_engine,preprocess_output,classification_output,extraction_output,validation_output,fraud_output"
+        ).limit(1).execute()
         return SupabaseRepository(client), True, None
     except Exception as exc:
-        return InMemoryRepository(), False, f"Supabase unavailable ({exc}); using in-memory repository."
+        return (
+            InMemoryRepository(),
+            False,
+            "Supabase unavailable or schema mismatch "
+            f"({exc}). Run `supabase/schema.sql` (or patch SQL) and restart. "
+            "Using in-memory repository.",
+        )
