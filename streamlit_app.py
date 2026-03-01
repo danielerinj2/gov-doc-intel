@@ -276,25 +276,13 @@ ALL_ROLES = [
     ROLE_PLATFORM_ADMIN,
 ]
 
-# Both Verifier and Senior Verifier can write and review.
-# The sets are intentionally identical — the gate structure
-# is preserved so they can be split again if needed later.
-WRITE_ROLES = {ROLE_VERIFIER, ROLE_SENIOR_VERIFIER}
-REVIEW_ROLES = {ROLE_VERIFIER, ROLE_SENIOR_VERIFIER}
-
-# Only Senior Verifier can resolve disputes, manage config,
-# govern templates/rules, and manage officer accounts.
-SENIOR_ROLES = {ROLE_SENIOR_VERIFIER}
-
-# Auditor and Senior Verifier can both read audit data.
-# Senior Verifier needs audit read to support governance decisions.
-AUDIT_ROLES = {ROLE_AUDITOR, ROLE_SENIOR_VERIFIER}
-
-# Platform Admin only — cross-tenant operations.
-PLATFORM_ROLES = {ROLE_PLATFORM_ADMIN}
-
-# Who can see unmasked PII fields.
-SENSITIVE_VIEW_ROLES = {ROLE_VERIFIER, ROLE_SENIOR_VERIFIER}
+# Temporary universal access mode: after sign-in, all roles can access all pages/actions.
+WRITE_ROLES = set(ALL_ROLES)
+REVIEW_ROLES = set(ALL_ROLES)
+SENIOR_ROLES = set(ALL_ROLES)
+AUDIT_ROLES = set(ALL_ROLES)
+PLATFORM_ROLES = set(ALL_ROLES)
+SENSITIVE_VIEW_ROLES = set(ALL_ROLES)
 
 # ── Pages ──────────────────────────────────────────────────────────────────────
 PAGES = [
@@ -454,17 +442,8 @@ def _section(title: str) -> None:
 
 
 def _render_journey(title: str, steps: list[str], active_index: int = -1) -> None:
-    parts: list[str] = []
-    for i, step in enumerate(steps):
-        cls = "journey-step active" if i == active_index else "journey-step"
-        parts.append(f'<span class="{cls}">{step}</span>')
-        if i < len(steps) - 1:
-            parts.append('<span class="journey-arrow">›</span>')
-    st.markdown(
-        f'<div style="font-size:0.78rem;font-weight:600;color:#546e7a;margin-bottom:0.2rem">{title}</div>'
-        f'<div class="journey-stepper">{"".join(parts)}</div>',
-        unsafe_allow_html=True,
-    )
+    # Journey strip intentionally hidden.
+    return
 
 
 def _kpi_card(label: str, value: Any, delta: str = "", delta_good: bool = True) -> str:
@@ -2378,12 +2357,6 @@ def _render_auth_gate() -> bool:
                 with st.form("auth_forgot_password_form"):
                     fp_email = st.text_input("Email", value="", placeholder="name@example.com")
                     fp_name = st.text_input("Name (optional)", value="")
-                    fp_role = st.selectbox(
-                        "Role",
-                        ALL_ROLES,
-                        format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
-                        key="forgot_password_role",
-                    )
                     submit_forgot_password = st.form_submit_button("Send Password Reset", use_container_width=True)
                 if submit_forgot_password:
                     target_email = fp_email.strip()
@@ -2396,7 +2369,7 @@ def _render_auth_gate() -> bool:
                             to_email=target_email,
                             template_type="forgot",
                             user_name=_default_user_name(fp_name, target_email),
-                            role=_role_label(fp_role),
+                            role="User",
                             user_email=target_email,
                             reset_link=recovery_link or _password_reset_redirect_default(),
                         )
@@ -2410,12 +2383,6 @@ def _render_auth_gate() -> bool:
                 with st.form("auth_forgot_username_form"):
                     fu_email = st.text_input("Email", value="", placeholder="name@example.com")
                     fu_name = st.text_input("Name (optional)", value="", key="forgot_username_name")
-                    fu_role = st.selectbox(
-                        "Role",
-                        ALL_ROLES,
-                        format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
-                        key="forgot_username_role",
-                    )
                     submit_forgot_username = st.form_submit_button("Send Username Reminder", use_container_width=True)
                 if submit_forgot_username:
                     target_email = fu_email.strip()
@@ -2426,7 +2393,7 @@ def _render_auth_gate() -> bool:
                             to_email=target_email,
                             template_type="username",
                             user_name=_default_user_name(fu_name, target_email),
-                            role=_role_label(fu_role),
+                            role="User",
                             user_email=target_email,
                         )
                         st.success("If the account exists, username reminder was sent.")
