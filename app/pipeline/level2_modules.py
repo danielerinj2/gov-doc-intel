@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -28,6 +29,14 @@ def _risk_level(score: float) -> str:
     if score >= 0.45:
         return "MEDIUM"
     return "LOW"
+
+
+def _norm_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _text_similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
 
 
 @dataclass
@@ -189,12 +198,31 @@ class TemplatePolicyRuleEngineModule:
         dtype = str(classification_out.get("document_type", "UNKNOWN")).upper()
         template = repo.get_active_template(tenant_id, dtype)
         rule = repo.get_active_rule(tenant_id, dtype)
+        template_cfg = dict(template.get("config") or {})
+        rule_cfg = dict(rule.get("config") or {})
+
+        field_patterns: dict[str, str] = {}
+        for cfg in (template_cfg, rule_cfg):
+            direct = cfg.get("field_patterns")
+            if isinstance(direct, dict):
+                for k, v in direct.items():
+                    if str(k).strip() and str(v).strip():
+                        field_patterns[_norm_key(str(k))] = str(v)
+            checks = cfg.get("checks")
+            if isinstance(checks, list):
+                for check in checks:
+                    if not isinstance(check, dict):
+                        continue
+                    field_name = str(check.get("field_name") or check.get("field") or "").strip()
+                    pattern = str(check.get("pattern") or check.get("regex") or "").strip()
+                    if field_name and pattern:
+                        field_patterns[_norm_key(field_name)] = pattern
 
         return {
             "template_id": template.get("template_id", f"tpl_{dtype.lower()}"),
             "template_version": template.get("template_version", "2025.1.0"),
             "document_type": dtype,
-            "template_config": template.get("config", {}),
+            "template_config": template_cfg,
             "policy_rule_set_id": template.get("policy_rule_set_id") or rule.get("rule_set_id", f"RULESET_{dtype}_DEFAULT"),
             "compiled_rule_set": {
                 "rule_name": rule.get("rule_name", f"rule_{dtype.lower()}"),
@@ -204,6 +232,7 @@ class TemplatePolicyRuleEngineModule:
                 "min_approval_confidence": _safe_float(rule.get("min_approval_confidence"), 0.72),
                 "max_approval_risk": _safe_float(rule.get("max_approval_risk"), 0.35),
                 "registry_required": bool(rule.get("registry_required", True)),
+                "field_patterns": field_patterns,
             },
         }
 
@@ -260,31 +289,118 @@ class ValidationModule:
         registry_ok = registry_status in {"MATCHED", "CONFIRMED", "NOT_AVAILABLE"} if not registry_required else registry_status in {"MATCHED", "CONFIRMED"}
 
         min_extract_conf = _safe_float(compiled.get("min_extract_confidence"), 0.6)
+        field_patterns = dict(compiled.get("field_patterns") or {})
+
+        normalized_extracted: dict[str, Any] = {}
+        for k, v in extracted_fields.items():
+            normalized_extracted[_norm_key(str(k))] = v
+
+        alias_groups = {
+            "name": ["name", "fullname", "applicantname"],
+            "dob": ["dob", "dateofbirth", "birthdate"],
+            "fathername": ["fathername", "father", "sonof", "s o", "so"],
+            "documentnumber": ["documentnumber", "aadhaarnumber", "pannumber", "licensenumber", "registrationnumber"],
+        }
+
         prefilled_mismatches: list[dict[str, Any]] = []
+        prefilled_matches = 0
+        prefilled_considered = 0
         for key, expected in prefilled.items():
-            local_value = extracted_fields.get(key)
+            prefilled_considered += 1
+            norm_key = _norm_key(str(key))
+            aliases = [norm_key] + alias_groups.get(norm_key, [])
+            local_value = None
+            matched_field_name = None
+            for alias in aliases:
+                alias_norm = _norm_key(alias)
+                if alias_norm in normalized_extracted:
+                    local_value = normalized_extracted.get(alias_norm)
+                    matched_field_name = alias_norm
+                    break
             if local_value is None:
                 prefilled_mismatches.append(
-                    {"field": key, "prefilled_value": expected, "extracted_value": None, "match": False, "reason": "FIELD_NOT_EXTRACTED"}
+                    {
+                        "field": key,
+                        "matched_field_name": None,
+                        "prefilled_value": expected,
+                        "extracted_value": None,
+                        "similarity": 0.0,
+                        "match": False,
+                        "reason": "FIELD_NOT_EXTRACTED",
+                    }
                 )
                 continue
-            match = str(local_value).strip().lower() == str(expected).strip().lower()
+            similarity = _text_similarity(str(expected or ""), str(local_value or ""))
+            match = similarity >= 0.85
             if not match:
                 prefilled_mismatches.append(
                     {
                         "field": key,
+                        "matched_field_name": matched_field_name,
                         "prefilled_value": expected,
                         "extracted_value": local_value,
+                        "similarity": round(similarity, 3),
                         "match": False,
                         "reason": "VALUE_MISMATCH",
                     }
                 )
+            else:
+                prefilled_matches += 1
+
+        field_pattern_results: list[dict[str, Any]] = []
+        pattern_fail_count = 0
+        for field_key, pattern in field_patterns.items():
+            local_value = normalized_extracted.get(_norm_key(field_key))
+            if local_value is None:
+                field_pattern_results.append(
+                    {
+                        "field_name": field_key,
+                        "pattern": pattern,
+                        "value": None,
+                        "status": "WARN",
+                        "reason_code": "FIELD_MISSING_FOR_PATTERN_CHECK",
+                    }
+                )
+                continue
+            try:
+                matched = re.fullmatch(pattern, str(local_value).strip()) is not None
+            except re.error:
+                field_pattern_results.append(
+                    {
+                        "field_name": field_key,
+                        "pattern": pattern,
+                        "value": str(local_value),
+                        "status": "WARN",
+                        "reason_code": "INVALID_REGEX_PATTERN",
+                    }
+                )
+                continue
+            status = "PASS" if matched else "FAIL"
+            if status == "FAIL":
+                pattern_fail_count += 1
+            field_pattern_results.append(
+                {
+                    "field_name": field_key,
+                    "pattern": pattern,
+                    "value": str(local_value),
+                    "status": status,
+                    "reason_code": "REGEX_MATCH" if matched else "REGEX_MISMATCH",
+                }
+            )
 
         prefilled_ok = len(prefilled_mismatches) == 0
-        is_valid = (len(missing) == 0) and extract_conf >= min_extract_conf and registry_ok and prefilled_ok
+        is_valid = (
+            (len(missing) == 0)
+            and extract_conf >= min_extract_conf
+            and registry_ok
+            and prefilled_ok
+            and pattern_fail_count == 0
+        )
+        overall_status = "PASS" if is_valid else "FAIL" if pattern_fail_count > 0 or not registry_ok or len(missing) > 0 else "WARN"
 
         return {
             "is_valid": is_valid,
+            "overall_status": overall_status,
             "missing_fields": missing,
             "extract_confidence": round(extract_conf, 3),
             "registry_status": registry_status,
@@ -295,10 +411,13 @@ class ValidationModule:
             "min_approval_confidence": _safe_float(compiled.get("min_approval_confidence"), 0.72),
             "max_approval_risk": _safe_float(compiled.get("max_approval_risk"), 0.35),
             "registry_required": registry_required,
-            "prefilled_consistency_status": "PASS" if prefilled_ok else "WARN",
-            "prefilled_match_count": max(0, len(prefilled) - len(prefilled_mismatches)),
+            "prefilled_consistency_status": "CONSISTENT" if prefilled_ok else "MISMATCH",
+            "prefilled_match_count": prefilled_matches,
+            "prefilled_considered_count": prefilled_considered,
             "prefilled_mismatch_count": len(prefilled_mismatches),
             "prefilled_mismatches": prefilled_mismatches,
+            "field_pattern_results": field_pattern_results,
+            "pattern_fail_count": pattern_fail_count,
         }
 
 

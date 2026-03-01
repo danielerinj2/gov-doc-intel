@@ -297,7 +297,7 @@ class DocumentService:
                 if isinstance(original_file_uri, str) and original_file_uri:
                     candidate = Path(original_file_uri)
                     if candidate.exists() and candidate.is_file():
-                        perceptual_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                        perceptual_hash = self._compute_perceptual_hash(candidate) or hashlib.sha256(candidate.read_bytes()).hexdigest()
             except Exception:
                 perceptual_hash = ""
 
@@ -393,6 +393,25 @@ class DocumentService:
         )
 
         return row
+
+    def _compute_perceptual_hash(self, file_path: Path) -> str | None:
+        try:
+            from PIL import Image  # type: ignore
+        except Exception:
+            return None
+
+        if file_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}:
+            return None
+
+        try:
+            with Image.open(file_path) as image:
+                gray = image.convert("L").resize((32, 32))
+                pixels = list(gray.getdata())
+            avg = sum(pixels) / max(1, len(pixels))
+            bits = "".join("1" if p > avg else "0" for p in pixels)
+            return format(int(bits, 2), "0256x")
+        except Exception:
+            return None
 
     def _process_document_fast_scan(
         self,
@@ -600,7 +619,11 @@ class DocumentService:
                     "script_hint": ((doc.get("metadata") or {}).get("ingestion") or {}).get("script_hint"),
                     "doc_type_hint": ((doc.get("metadata") or {}).get("ingestion") or {}).get("doc_type_hint"),
                     "submission_context": (doc.get("metadata") or {}).get("submission_context") or {},
-                    "prefilled_data": (doc.get("metadata") or {}).get("prefilled_form_data") or {},
+                    "prefilled_data": (
+                        (doc.get("metadata") or {}).get("prefilled_data")
+                        or (doc.get("metadata") or {}).get("prefilled_form_data")
+                        or {}
+                    ),
                     "tenant_id": tenant_id,
                     "document_id": doc["id"],
                     "repo": self.repo,
@@ -1865,18 +1888,47 @@ class DocumentService:
         )
 
         field_results = []
+        pattern_by_field = {
+            str(item.get("field_name", "")).upper(): dict(item)
+            for item in list(ctx["validation"].get("field_pattern_results") or [])
+            if isinstance(item, dict)
+        }
         for item in extraction.fields:
+            base_status = "PASS" if item.confidence >= 0.6 else "WARN"
+            pattern_result = pattern_by_field.get(str(item.field_name).upper())
+            pattern_status = str((pattern_result or {}).get("status") or "UNKNOWN").upper()
+            pattern_reason = str((pattern_result or {}).get("reason_code") or "NO_PATTERN_RULE")
+            if pattern_status == "FAIL":
+                final_status = "FAIL"
+                final_reason = pattern_reason
+            elif base_status == "WARN":
+                final_status = "WARN"
+                final_reason = "LOW_CONFIDENCE"
+            else:
+                final_status = "PASS"
+                final_reason = "FIELD_VALID"
+
             field_results.append(
                 FieldValidationResult(
                     field_name=item.field_name,
-                    status="PASS" if item.confidence >= 0.6 else "WARN",
+                    status=base_status if pattern_status in {"PASS", "WARN", "UNKNOWN"} else "FAIL",
                     rule_results=[
                         RuleResult(
                             rule_id="RULE_NON_EMPTY",
                             status="PASS" if item.raw_text else "FAIL",
                             reason_code="RULE_PASSED" if item.raw_text else "EMPTY",
                             message="Field has value" if item.raw_text else "Field is empty",
-                        )
+                        ),
+                        RuleResult(
+                            rule_id="RULE_PATTERN",
+                            status=pattern_status if pattern_status in {"PASS", "FAIL", "WARN"} else "UNKNOWN",
+                            reason_code=pattern_reason,
+                            message=(
+                                f"Pattern check status: {pattern_status}"
+                                if pattern_result
+                                else "No regex rule configured for this field"
+                            ),
+                        ),
                     ],
                     ml_checks=[
                         MLCheckResult(
@@ -1887,8 +1939,8 @@ class DocumentService:
                             message="Confidence check on extracted field",
                         )
                     ],
-                    final_status="PASS" if item.confidence >= 0.6 else "WARN",
-                    final_reason_code="FIELD_VALID" if item.confidence >= 0.6 else "SOFT_VALIDATION_WARNING",
+                    final_status=final_status,
+                    final_reason_code=final_reason,
                 )
             )
 
@@ -1912,7 +1964,7 @@ class DocumentService:
                 )
                 for item in list(ctx["validation"].get("prefilled_mismatches") or [])
             ],
-            overall_status="PASS" if ctx["validation"].get("is_valid") else "WARN",
+            overall_status=str(ctx["validation"].get("overall_status") or ("PASS" if ctx["validation"].get("is_valid") else "WARN")),
             model_metadata=ValidationModelMetadata(
                 rule_engine_version="1.4.0",
                 ml_validator_model_id="validator-v2",

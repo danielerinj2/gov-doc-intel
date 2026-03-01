@@ -819,6 +819,12 @@ def _render_intake_processing(
                 value="",
                 help="Example: scholarship, pension, land mutation, welfare scheme.",
             )
+            prefilled_json = st.text_area(
+                "Pre-filled citizen data (optional JSON)",
+                value="",
+                height=65,
+                help='Example: {"name":"Ramesh Kumar","dob":"14/08/1985"}',
+            )
             notes = st.text_area("Notes (optional)", value="", height=55)
             fallback_text = ""
             if fallback_required:
@@ -843,6 +849,22 @@ def _render_intake_processing(
                 upload_text, source_path = _read_uploaded_document(uploaded, script_hint=hint_script)
                 raw_text = (upload_text or "").strip()
                 fallback_clean = (fallback_text or "").strip()
+                prefilled_data: dict[str, Any] = {}
+                prefilled_valid = True
+                if prefilled_json.strip():
+                    try:
+                        parsed = json.loads(prefilled_json)
+                        if isinstance(parsed, dict):
+                            prefilled_data = parsed
+                        else:
+                            prefilled_valid = False
+                            st.error("Pre-filled citizen data must be a JSON object.")
+                    except Exception as exc:
+                        prefilled_valid = False
+                        st.error(f"Invalid pre-filled JSON: {exc}")
+
+                if not prefilled_valid:
+                    return
 
                 if not raw_text and not fallback_clean:
                     st.session_state["portal_fallback_required"] = True
@@ -868,6 +890,9 @@ def _render_intake_processing(
                     "ingestion": ingestion,
                     "operator_notes": notes.strip() or None,
                 }
+                if prefilled_data:
+                    metadata["prefilled_data"] = prefilled_data
+                    metadata["prefilled_form_data"] = prefilled_data
                 if scheme_context.strip():
                     metadata["submission_context"] = {
                         "scheme": scheme_context.strip(),
@@ -1169,6 +1194,10 @@ def _render_review_workbench(
                 failed = [r for r in fr if str(r.get("status", "")).upper() in {"FAIL", "FAILED", "ERROR"}]
                 if failed:
                     st.markdown(f'<div class="alert-warn">⚠️ {len(failed)} field(s) failed validation.</div>', unsafe_allow_html=True)
+            pattern_results = ((selected_doc.get("derived") or {}).get("validation") or {}).get("field_pattern_results", [])
+            if pattern_results:
+                _section("Pattern Cross-Checks")
+                st.dataframe(pd.DataFrame(pattern_results), use_container_width=True, hide_index=True)
 
         with lt3:
             _section("Stamp, Seal & Signature Detection")
