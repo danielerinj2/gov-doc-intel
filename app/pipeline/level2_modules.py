@@ -199,9 +199,18 @@ class FieldExtractionModule:
 class ValidationModule:
     """Rules + ML-style checks module."""
 
-    def validate(self, *, extraction_out: dict[str, Any], issuer_precheck: dict[str, Any], rule_bundle: dict[str, Any]) -> dict[str, Any]:
+    def validate(
+        self,
+        *,
+        extraction_out: dict[str, Any],
+        issuer_precheck: dict[str, Any],
+        rule_bundle: dict[str, Any],
+        prefilled_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         missing = list(extraction_out.get("required_missing") or [])
         extract_conf = _safe_float(extraction_out.get("confidence"), 0.5)
+        extracted_fields = dict(extraction_out.get("fields") or {})
+        prefilled = dict(prefilled_data or {})
 
         compiled = dict(rule_bundle.get("compiled_rule_set") or {})
         registry_required = bool(compiled.get("registry_required", True))
@@ -209,7 +218,28 @@ class ValidationModule:
         registry_ok = registry_status in {"MATCHED", "CONFIRMED", "NOT_AVAILABLE"} if not registry_required else registry_status in {"MATCHED", "CONFIRMED"}
 
         min_extract_conf = _safe_float(compiled.get("min_extract_confidence"), 0.6)
-        is_valid = (len(missing) == 0) and extract_conf >= min_extract_conf and registry_ok
+        prefilled_mismatches: list[dict[str, Any]] = []
+        for key, expected in prefilled.items():
+            local_value = extracted_fields.get(key)
+            if local_value is None:
+                prefilled_mismatches.append(
+                    {"field": key, "prefilled_value": expected, "extracted_value": None, "match": False, "reason": "FIELD_NOT_EXTRACTED"}
+                )
+                continue
+            match = str(local_value).strip().lower() == str(expected).strip().lower()
+            if not match:
+                prefilled_mismatches.append(
+                    {
+                        "field": key,
+                        "prefilled_value": expected,
+                        "extracted_value": local_value,
+                        "match": False,
+                        "reason": "VALUE_MISMATCH",
+                    }
+                )
+
+        prefilled_ok = len(prefilled_mismatches) == 0
+        is_valid = (len(missing) == 0) and extract_conf >= min_extract_conf and registry_ok and prefilled_ok
 
         return {
             "is_valid": is_valid,
@@ -223,6 +253,10 @@ class ValidationModule:
             "min_approval_confidence": _safe_float(compiled.get("min_approval_confidence"), 0.72),
             "max_approval_risk": _safe_float(compiled.get("max_approval_risk"), 0.35),
             "registry_required": registry_required,
+            "prefilled_consistency_status": "PASS" if prefilled_ok else "WARN",
+            "prefilled_match_count": max(0, len(prefilled) - len(prefilled_mismatches)),
+            "prefilled_mismatch_count": len(prefilled_mismatches),
+            "prefilled_mismatches": prefilled_mismatches,
         }
 
 

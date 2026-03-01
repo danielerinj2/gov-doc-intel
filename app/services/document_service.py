@@ -19,6 +19,7 @@ from app.contracts.schemas import (
     ExtractionOutput,
     ExtractedField,
     FieldComparison,
+    DocumentCheckResult,
     FieldValidationResult,
     FraudComponent,
     FraudRiskComponents,
@@ -333,6 +334,7 @@ class DocumentService:
                 {
                     "raw_text": doc.get("raw_text", ""),
                     "source_path": ((doc.get("metadata") or {}).get("ingestion") or {}).get("original_file_uri"),
+                    "prefilled_data": (doc.get("metadata") or {}).get("prefilled_form_data") or {},
                     "tenant_id": tenant_id,
                     "document_id": doc["id"],
                     "repo": self.repo,
@@ -1583,7 +1585,18 @@ class DocumentService:
             template_version=classification.template_version,
             rule_set_id=str(ctx["validation"].get("rule_set_id", "RULESET_DEFAULT")),
             field_results=field_results,
-            document_level_results=[],
+            document_level_results=[
+                DocumentCheckResult(
+                    check_id=f"PREFILLED_MATCH_{str(item.get('field', 'UNKNOWN')).upper()}",
+                    status="WARN",
+                    reason_code=str(item.get("reason", "PREFILLED_MISMATCH")),
+                    message=(
+                        f"Prefilled '{item.get('prefilled_value')}' differs from extracted "
+                        f"'{item.get('extracted_value')}' for field {item.get('field')}"
+                    ),
+                )
+                for item in list(ctx["validation"].get("prefilled_mismatches") or [])
+            ],
             overall_status="PASS" if ctx["validation"].get("is_valid") else "WARN",
             model_metadata=ValidationModelMetadata(
                 rule_engine_version="1.4.0",

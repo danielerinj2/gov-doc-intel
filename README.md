@@ -16,6 +16,7 @@ Streamlit + Supabase + Groq implementation for a DAG-based government document i
 - Governance/Ops/Tenancy layer with tenant data policies, partition config, platform oversight grants, operational runbooks, and governance audit reviews
 - KPI/SLA target management, rollout phase planning, and risk register tracking (Part 5)
 - Supabase persistence with in-memory fallback
+- Backend-only verification layer usage: citizens interact through government portals/service centers, not this internal console
 
 ## Setup
 1. Create venv and install requirements:
@@ -204,6 +205,11 @@ Unified records are persisted per `document_id + job_id` in `document_records.re
    - `A1` Template and Rule Management (versioned)
    - `A2` User and Role Management (officer accounts)
    - `A3` Governance/KPI controls and policy updates
+6. `Intake & Processing` now supports:
+   - Online submission intake (portal/app style)
+   - Service-center assisted intake (scanner/camera metadata)
+   - Operational inputs pointer (corrections/templates/offline sync)
+   - Pre-filled form data cross-verification in validation
 
 ## Verify env quickly
 ```bash
@@ -239,6 +245,8 @@ If app status shows `PART5_SCHEMA_READY=false`, apply:
   - `X-API-Key` (optional but recommended for app-to-app calls)
 - Core endpoints:
   - `POST /documents`
+  - `POST /portal/documents`
+  - `GET /portal/citizens/{citizen_id}/documents`
   - `POST /documents/{document_id}/process`
   - `GET /documents/{document_id}/status`
   - `GET /documents/{document_id}/result`
@@ -251,6 +259,9 @@ If app status shows `PART5_SCHEMA_READY=false`, apply:
   - `GET /tenants/{tenant_id}/kpis`
   - `POST /tenants/{tenant_id}/offline/sync`
   - `POST /tenants/{tenant_id}/api-keys`
+  - `GET/POST /tenants/{tenant_id}/templates`
+  - `GET/POST /tenants/{tenant_id}/rules`
+  - `GET/POST /tenants/{tenant_id}/officers`
 
 ## Offline Worker (Rate-Controlled Sync)
 Run a sync batch for provisional offline documents:

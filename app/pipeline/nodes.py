@@ -114,6 +114,7 @@ class PipelineNodes:
             extraction_out=ctx["field_extract"],
             issuer_precheck=ctx["issuer_registry_verification"],
             rule_bundle=ctx["template_map"],
+            prefilled_data=dict(ctx.get("prefilled_data") or {}),
         )
 
     def fraud_behavioral_engine(self, ctx: dict[str, Any]) -> dict[str, Any]:

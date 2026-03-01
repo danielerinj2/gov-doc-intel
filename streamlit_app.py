@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -31,10 +33,8 @@ st.set_page_config(page_title="Gov Document Intelligence", page_icon="📄", lay
 service = DocumentService()
 governance = GovernanceService(service.repo)
 offline_service = OfflineService(service)
-ROLE_CITIZEN_PORTAL = "citizen_portal"
 
 ALL_ROLES = [
-    ROLE_CITIZEN_PORTAL,
     ROLE_TENANT_OPERATOR,
     ROLE_TENANT_OFFICER,
     ROLE_TENANT_SENIOR_OFFICER,
@@ -69,7 +69,6 @@ ADMIN_ROLES = {ROLE_TENANT_ADMIN, ROLE_ADMIN}
 AUDIT_ROLES = {ROLE_TENANT_AUDITOR, ROLE_AUDITOR, ROLE_TENANT_ADMIN, ROLE_ADMIN}
 PLATFORM_ROLES = {ROLE_PLATFORM_AUDITOR, ROLE_PLATFORM_SUPER_ADMIN}
 SENSITIVE_VIEW_ROLES = {
-    ROLE_CITIZEN_PORTAL,
     ROLE_TENANT_OPERATOR,
     ROLE_TENANT_OFFICER,
     ROLE_TENANT_SENIOR_OFFICER,
@@ -80,7 +79,6 @@ SENSITIVE_VIEW_ROLES = {
 }
 
 PAGES = [
-    "Citizen Portal (Upload & Status)",
     "Intake & Processing",
     "Review Workbench",
     "Dispute Desk",
@@ -94,7 +92,6 @@ PAGES = [
 ]
 
 PAGE_ACCESS = {
-    "Citizen Portal (Upload & Status)": {ROLE_CITIZEN_PORTAL},
     "Intake & Processing": WRITE_ROLES | AUDIT_ROLES,
     "Review Workbench": REVIEW_ROLES | AUDIT_ROLES,
     "Dispute Desk": REVIEW_ROLES | AUDIT_ROLES,
@@ -159,6 +156,37 @@ def _render_journey(title: str, steps: list[str]) -> None:
     st.info(" -> ".join(steps))
 
 
+def _read_uploaded_document(uploaded_file: Any) -> tuple[str, str | None]:
+    if uploaded_file is None:
+        return "", None
+
+    suffix = Path(str(uploaded_file.name)).suffix or ".bin"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+        handle.write(uploaded_file.getvalue())
+        tmp_path = handle.name
+
+    raw_text = ""
+    file_ext = suffix.lower()
+    if file_ext in {".txt", ".csv", ".json"}:
+        try:
+            raw_text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+        except Exception:
+            raw_text = ""
+    elif file_ext == ".pdf":
+        try:
+            from pypdf import PdfReader  # type: ignore
+
+            reader = PdfReader(tmp_path)
+            chunks = []
+            for page in reader.pages[:10]:
+                chunks.append(page.extract_text() or "")
+            raw_text = "\n".join(chunks).strip()
+        except Exception:
+            raw_text = ""
+
+    return raw_text, tmp_path
+
+
 def _render_env_status() -> None:
     with st.expander("Environment status", expanded=False):
         st.write(
@@ -184,13 +212,8 @@ def _load_docs(
     tenant_id: str,
     officer_id: str,
     role: str,
-    citizen_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     try:
-        if role == ROLE_CITIZEN_PORTAL:
-            if not citizen_id:
-                return [], None
-            return service.list_citizen_documents(tenant_id, citizen_id), None
         return service.list_documents(tenant_id, officer_id), None
     except Exception as exc:
         return [], str(exc)
@@ -265,31 +288,10 @@ def _render_stakeholder_snapshot(
 
     derived = dict(selected_doc.get("derived") or {})
     events: list[dict[str, Any]] = []
-    if role != ROLE_CITIZEN_PORTAL:
-        try:
-            events = service.list_events(str(selected_doc.get("id")), tenant_id, officer_id)
-        except Exception:
-            events = []
-
-    if role == ROLE_CITIZEN_PORTAL:
-        try:
-            view = service.get_citizen_case_view(
-                tenant_id=tenant_id,
-                document_id=str(selected_doc.get("id")),
-                citizen_id=str(selected_doc.get("citizen_id", "")),
-            )
-            st.write(
-                {
-                    "status": view.get("state"),
-                    "decision": view.get("decision"),
-                    "rejection_reason_plain": view.get("explanation_text"),
-                    "next_steps": view.get("next_steps"),
-                    "dispute_option": "AVAILABLE",
-                }
-            )
-        except Exception as exc:
-            st.error(str(exc))
-        return
+    try:
+        events = service.list_events(str(selected_doc.get("id")), tenant_id, officer_id)
+    except Exception:
+        events = []
 
     if role in {ROLE_TENANT_OPERATOR, ROLE_CASE_WORKER}:
         st.write(
@@ -371,101 +373,6 @@ def _render_stakeholder_snapshot(
         )
 
 
-def _render_citizen_portal(
-    *,
-    tenant_id: str,
-    citizen_id: str,
-    docs: list[dict[str, Any]],
-    selected_doc: dict[str, Any] | None,
-) -> None:
-    _render_journey(
-        "User Journey - Citizen Online",
-        [
-            "submit",
-            "RECEIVED",
-            "pipeline",
-            "auto decision or review",
-            "notified",
-            "dispute if rejected",
-        ],
-    )
-
-    st.markdown("### C1 - Application and Document Upload")
-    with st.form("citizen_upload_form"):
-        file_name = st.text_input("File name", value="citizen_upload.txt")
-        raw_text = st.text_area("Document text / OCR seed", value="Name: Citizen Demo\nID: DEMO123", height=100)
-        metadata_raw = st.text_area(
-            "Metadata JSON",
-            value='{"source":"ONLINE_PORTAL","application_id":"app-001"}',
-            height=70,
-        )
-        process_now = st.checkbox("Process immediately", value=True)
-        submit = st.form_submit_button("Submit Application", use_container_width=True)
-    if submit:
-        try:
-            metadata = json.loads(metadata_raw) if metadata_raw.strip() else {}
-            created = service.citizen_submit_document(
-                tenant_id=tenant_id,
-                citizen_id=citizen_id,
-                file_name=file_name.strip(),
-                raw_text=raw_text,
-                metadata=metadata,
-                process_now=process_now,
-            )
-            st.success(f"Submitted document: {created.get('id')} (state={created.get('state')})")
-        except Exception as exc:
-            st.error(str(exc))
-
-    st.markdown("### C2 - Application Status and Notifications")
-    if docs:
-        cdf = pd.DataFrame(docs)
-        cols = [c for c in ["id", "state", "decision", "confidence", "risk_score", "created_at", "updated_at"] if c in cdf.columns]
-        st.dataframe(cdf[cols], use_container_width=True, hide_index=True)
-    else:
-        st.info("No submitted documents found for this citizen.")
-
-    if not selected_doc:
-        return
-
-    try:
-        case_view = service.get_citizen_case_view(
-            tenant_id=tenant_id,
-            document_id=str(selected_doc.get("id")),
-            citizen_id=citizen_id,
-        )
-        st.write(case_view)
-    except Exception as exc:
-        st.error(str(exc))
-        return
-
-    notifications = service.repo.list_notifications(tenant_id, document_id=str(selected_doc.get("id")))
-    notifications = [n for n in notifications if str(n.get("citizen_id", "")) == citizen_id]
-    st.markdown("### Notification History")
-    if notifications:
-        st.dataframe(pd.DataFrame(notifications), use_container_width=True, hide_index=True)
-    else:
-        st.info("No notifications yet.")
-
-    if str(selected_doc.get("state")) == "REJECTED":
-        st.markdown("### Raise Dispute")
-        with st.form("citizen_dispute_form"):
-            reason = st.text_input("Reason", value="I want re-verification")
-            evidence_note = st.text_input("Evidence note", value="Please review uploaded evidence")
-            submit_dispute = st.form_submit_button("Submit Dispute", use_container_width=True)
-        if submit_dispute:
-            try:
-                row = service.citizen_open_dispute(
-                    tenant_id=tenant_id,
-                    document_id=str(selected_doc.get("id")),
-                    citizen_id=citizen_id,
-                    reason=reason.strip(),
-                    evidence_note=evidence_note.strip(),
-                )
-                st.success(f"Dispute submitted: {row.get('id')}")
-            except Exception as exc:
-                st.error(str(exc))
-
-
 def _render_intake_processing(
     *,
     role: str,
@@ -475,57 +382,155 @@ def _render_intake_processing(
     selected_doc: dict[str, Any] | None,
 ) -> None:
     _render_journey(
-        "User Journey - Citizen Online",
+        "User Journey - Citizen Online (Backend-mediated)",
         [
-            "submit",
-            "RECEIVED",
-            "pipeline",
-            "auto decision or review",
-            "notified",
-            "dispute if rejected",
+            "citizen submits on govt portal",
+            "backend receives document",
+            "pipeline decision/review",
+            "citizen notified via portal/SMS",
+        ],
+    )
+    _render_journey(
+        "User Journey - Service Center Assisted",
+        [
+            "operator scans/captures",
+            "optional offline queue",
+            "sync to central",
+            "central decision + citizen feedback",
         ],
     )
 
     can_write = role in WRITE_ROLES
-    st.markdown("### Intake Form")
-    with st.form("intake_form"):
-        citizen_id = st.text_input("Citizen ID", value="citizen-001")
-        file_name = st.text_input("File name", value="sample_document.txt")
-        metadata_raw = st.text_area("Metadata JSON", value='{"source":"ONLINE_PORTAL"}', height=90)
-        raw_text = st.text_area(
-            "Document text / OCR input",
-            value=(
-                "Name: John Doe\n"
-                "ID: AB12345\n"
-                "Issuer: State Board\n"
-                "This certificate includes official seal and signature."
-            ),
-            height=140,
+    intake_tab1, intake_tab2, intake_tab3 = st.tabs(
+        ["Online Submission Intake", "Service Center Intake", "Operational Inputs"]
+    )
+
+    with intake_tab1:
+        st.markdown("### Portal/API Ingestion")
+        uploaded = st.file_uploader(
+            "Upload document (PDF/JPG/PNG/TXT)",
+            type=["pdf", "jpg", "jpeg", "png", "txt", "csv", "json"],
+            key="portal_upload",
         )
-        create = st.form_submit_button("Create", disabled=not can_write, use_container_width=True)
-        create_process = st.form_submit_button("Create + Process", disabled=not can_write, use_container_width=True)
+        with st.form("intake_form_online"):
+            citizen_id = st.text_input("Citizen ID", value="citizen-001")
+            file_name = st.text_input("File name", value="portal_submission.txt")
+            prefilled_json = st.text_area(
+                "Pre-filled application data JSON (cross-verify)",
+                value='{"name":"John Doe","document_number":"AB12345"}',
+                height=80,
+            )
+            metadata_raw = st.text_area("Metadata JSON", value='{"source":"ONLINE_PORTAL"}', height=80)
+            fallback_text = st.text_area("Fallback text (if upload has no text)", value="", height=110)
+            create = st.form_submit_button("Create", disabled=not can_write, use_container_width=True)
+            create_process = st.form_submit_button("Create + Process", disabled=not can_write, use_container_width=True)
+
+        if create or create_process:
+            try:
+                parsed_prefilled = json.loads(prefilled_json) if prefilled_json.strip() else {}
+                metadata = json.loads(metadata_raw) if metadata_raw.strip() else {}
+                upload_text, source_path = _read_uploaded_document(uploaded)
+                raw_text = upload_text or fallback_text or ""
+                final_name = file_name.strip() or (uploaded.name if uploaded else "uploaded_document")
+                ingestion = dict(metadata.get("ingestion") or {})
+                if source_path:
+                    ingestion["original_file_uri"] = source_path
+                ingestion.setdefault("source", "ONLINE_PORTAL")
+                metadata["ingestion"] = ingestion
+                metadata["prefilled_form_data"] = parsed_prefilled
+                created = service.create_document(
+                    tenant_id=tenant_id,
+                    citizen_id=citizen_id.strip(),
+                    file_name=final_name,
+                    raw_text=raw_text,
+                    officer_id=officer_id,
+                    metadata=metadata,
+                )
+                if create_process:
+                    processed = service.process_document(str(created["id"]), tenant_id, officer_id)
+                    st.success(f"Created and processed {processed['id']} -> {processed.get('state')}")
+                else:
+                    st.success(f"Created document {created['id']}")
+            except Exception as exc:
+                st.error(str(exc))
+
+    with intake_tab2:
+        st.markdown("### Service Center Capture")
+        sc_uploaded = st.file_uploader(
+            "Center capture (scanner/camera)",
+            type=["pdf", "jpg", "jpeg", "png", "txt"],
+            key="center_upload",
+        )
+        with st.form("intake_form_center"):
+            citizen_id_sc = st.text_input("Citizen ID", value="citizen-center-001")
+            file_name_sc = st.text_input("File name", value="center_capture.txt")
+            center_id = st.text_input("Service center ID", value="center-01")
+            reference_no = st.text_input("Citizen reference number", value="REF-001")
+            center_meta_raw = st.text_area(
+                "Center metadata JSON",
+                value='{"source":"SERVICE_CENTER","service_type":"WELFARE_SCHEME"}',
+                height=80,
+            )
+            center_fallback_text = st.text_area("Fallback text", value="", height=100)
+            save_only = st.form_submit_button("Save Intake", disabled=not can_write, use_container_width=True)
+            process_now = st.form_submit_button("Save + Process", disabled=not can_write, use_container_width=True)
+            save_offline = st.form_submit_button("Save as Offline Provisional", disabled=not can_write, use_container_width=True)
+
+        if save_only or process_now or save_offline:
+            try:
+                metadata_sc = json.loads(center_meta_raw) if center_meta_raw.strip() else {}
+                upload_text, source_path = _read_uploaded_document(sc_uploaded)
+                raw_text_sc = upload_text or center_fallback_text or ""
+                final_name_sc = file_name_sc.strip() or (sc_uploaded.name if sc_uploaded else "center_capture")
+                ingestion_sc = dict(metadata_sc.get("ingestion") or {})
+                ingestion_sc.setdefault("source", "SERVICE_CENTER")
+                ingestion_sc["operator_center_id"] = center_id.strip()
+                ingestion_sc["citizen_reference_number"] = reference_no.strip()
+                if source_path:
+                    ingestion_sc["original_file_uri"] = source_path
+                metadata_sc["ingestion"] = ingestion_sc
+
+                if save_offline:
+                    out = offline_service.create_offline_provisional(
+                        tenant_id=tenant_id,
+                        citizen_id=citizen_id_sc.strip(),
+                        file_name=final_name_sc,
+                        raw_text=raw_text_sc,
+                        officer_id=officer_id,
+                        local_model_versions={"ocr_model_id": "ocr-lite-v1", "classifier_model_id": "classifier-lite-v1"},
+                        provisional_decision="REVIEW",
+                        metadata=metadata_sc,
+                    )
+                    st.success(f"Offline provisional created: {out.get('id')}")
+                else:
+                    created = service.create_document(
+                        tenant_id=tenant_id,
+                        citizen_id=citizen_id_sc.strip(),
+                        file_name=final_name_sc,
+                        raw_text=raw_text_sc,
+                        officer_id=officer_id,
+                        metadata=metadata_sc,
+                    )
+                    if process_now:
+                        processed = service.process_document(str(created["id"]), tenant_id, officer_id)
+                        st.success(f"Saved and processed {processed['id']} -> {processed.get('state')}")
+                    else:
+                        st.success(f"Saved service-center intake {created['id']}")
+            except Exception as exc:
+                st.error(str(exc))
+
+    with intake_tab3:
+        st.markdown("### Operational / Training Inputs")
+        st.write(
+            {
+                "operator_corrections": "Use Review Workbench -> Field Correction",
+                "new_templates_rules": "Use Governance & KPI -> A1 Template/Rule Management",
+                "offline_sync_inputs": "Use Offline Sync Console",
+            }
+        )
 
     if not can_write:
         st.warning("Actions are hidden for this role. Read-only access only.")
-
-    if create or create_process:
-        try:
-            metadata = json.loads(metadata_raw) if metadata_raw.strip() else {}
-            created = service.create_document(
-                tenant_id=tenant_id,
-                citizen_id=citizen_id.strip(),
-                file_name=file_name.strip(),
-                raw_text=raw_text,
-                officer_id=officer_id,
-                metadata=metadata,
-            )
-            if create_process:
-                processed = service.process_document(str(created["id"]), tenant_id, officer_id)
-                st.success(f"Created and processed {processed['id']} -> {processed.get('state')}")
-            else:
-                st.success(f"Created document {created['id']}")
-        except Exception as exc:
-            st.error(str(exc))
 
     st.markdown("### Queue Status")
     if not docs:
@@ -645,6 +650,19 @@ def _render_review_workbench(
             "overall_status": validation_out.get("overall_status"),
             "rule_set_id": validation_out.get("rule_set_id"),
         })
+
+    derived_validation = (selected_doc.get("derived") or {}).get("validation", {})
+    st.markdown("### Pre-filled Data Cross-Verification")
+    st.write(
+        {
+            "status": derived_validation.get("prefilled_consistency_status", "NOT_AVAILABLE"),
+            "match_count": derived_validation.get("prefilled_match_count", 0),
+            "mismatch_count": derived_validation.get("prefilled_mismatch_count", 0),
+        }
+    )
+    mismatches = list(derived_validation.get("prefilled_mismatches") or [])
+    if mismatches:
+        st.dataframe(pd.DataFrame(mismatches), use_container_width=True, hide_index=True)
 
     st.markdown("### Authenticity Markers")
     marker_rows = visual_out.get("markers") or []
@@ -815,6 +833,20 @@ def _render_fraud_authenticity(*, selected_doc: dict[str, Any] | None, selected_
     st.markdown("### Issuer Verification")
     st.write(issuer_out or {"status": "NOT_AVAILABLE"})
 
+    st.markdown("### Operator Guidance")
+    risk_level = str(fraud_out.get("risk_level", "MEDIUM")).upper()
+    guidance: list[str] = []
+    if risk_level in {"HIGH", "CRITICAL"}:
+        guidance.append("Escalate to Fraud Desk queue before final approval.")
+    if ((visual_out.get("image_forensics") or {}).get("tamper_signals")):
+        guidance.append("Manually inspect highlighted tamper regions and compare with source scan.")
+    issuer_status = str(issuer_out.get("status") or issuer_out.get("registry_status") or "UNKNOWN").upper()
+    if issuer_status in {"MISMATCH", "UNVERIFIED", "NOT_FOUND", "ERROR"}:
+        guidance.append("Request alternate issuer proof or direct verification reference.")
+    if not guidance:
+        guidance.append("No critical fraud signals detected; continue standard review workflow.")
+    st.write({"suggestions": guidance})
+
 
 def _render_citizen_communication(
     *,
@@ -823,6 +855,7 @@ def _render_citizen_communication(
     officer_id: str,
     selected_doc: dict[str, Any] | None,
 ) -> None:
+    st.caption("Citizen interactions are handled through government portals/service centers; this screen is backend operator view.")
     _render_journey(
         "User Journey - Citizen Notifications",
         [
@@ -1447,14 +1480,9 @@ def main() -> None:
         st.header("Access Context")
         tenant_id = st.text_input("Tenant ID", value="dept-education").strip()
         role = st.selectbox("Role", ALL_ROLES, index=0)
-        if role == ROLE_CITIZEN_PORTAL:
-            citizen_portal_id = st.text_input("Citizen ID", value="citizen-001").strip()
-            officer_id = f"citizen-portal-{tenant_id}"
-        else:
-            citizen_portal_id = ""
-            officer_id = st.text_input("Actor / Officer ID", value="officer-001").strip()
+        officer_id = st.text_input("Actor / Officer ID", value="officer-001").strip()
 
-        if role != ROLE_CITIZEN_PORTAL and st.button("Register / Bind Officer", use_container_width=True):
+        if st.button("Register / Bind Officer", use_container_width=True):
             try:
                 row = service.register_officer(officer_id, tenant_id, role)
                 st.success(f"Bound {row['officer_id']} -> {row['tenant_id']} ({row['role']})")
@@ -1480,7 +1508,6 @@ def main() -> None:
             tenant_id=tenant_id,
             officer_id=officer_id,
             role=role,
-            citizen_id=citizen_portal_id if role == ROLE_CITIZEN_PORTAL else None,
         )
         if docs_error:
             st.error(docs_error)
@@ -1509,14 +1536,7 @@ def main() -> None:
 
     st.divider()
 
-    if page == "Citizen Portal (Upload & Status)":
-        _render_citizen_portal(
-            tenant_id=tenant_id,
-            citizen_id=citizen_portal_id,
-            docs=docs,
-            selected_doc=selected_doc,
-        )
-    elif page == "Intake & Processing":
+    if page == "Intake & Processing":
         _render_intake_processing(role=role, tenant_id=tenant_id, officer_id=officer_id, docs=docs, selected_doc=selected_doc)
     elif page == "Review Workbench":
         _render_review_workbench(

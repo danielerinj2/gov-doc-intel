@@ -45,6 +45,47 @@ class ApiKeyCreateRequest(BaseModel):
     raw_key: str = Field(min_length=16)
 
 
+class PortalIngestRequest(BaseModel):
+    citizen_id: str = Field(min_length=1)
+    file_name: str = Field(min_length=1)
+    raw_text: str = Field(default="")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    process_now: bool = True
+
+
+class TemplateUpsertRequest(BaseModel):
+    document_type: str = Field(min_length=1)
+    template_id: str = Field(min_length=1)
+    version: int = Field(ge=1)
+    template_version: str = Field(default="2025.1.0")
+    policy_rule_set_id: str | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
+    doc_subtype: str | None = None
+    region_code: str | None = None
+    description: str | None = None
+    lifecycle_status: str = Field(default="ACTIVE")
+    is_active: bool = True
+
+
+class RuleUpsertRequest(BaseModel):
+    document_type: str = Field(min_length=1)
+    rule_name: str = Field(min_length=1)
+    version: int = Field(ge=1)
+    rule_set_id: str = Field(min_length=1)
+    min_extract_confidence: float = Field(ge=0.0, le=1.0, default=0.6)
+    min_approval_confidence: float = Field(ge=0.0, le=1.0, default=0.72)
+    max_approval_risk: float = Field(ge=0.0, le=1.0, default=0.35)
+    registry_required: bool = True
+    config: dict[str, Any] = Field(default_factory=dict)
+    is_active: bool = True
+
+
+class OfficerUpsertRequest(BaseModel):
+    officer_id: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    status: str = Field(default="ACTIVE")
+
+
 def _ctx(
     x_tenant_id: str = Header(..., alias="X-Tenant-ID"),
     x_officer_id: str = Header(..., alias="X-Officer-ID"),
@@ -57,6 +98,17 @@ def _ctx(
         if not service.repo.validate_tenant_api_key(tenant_id, x_api_key.strip()):
             raise HTTPException(status_code=401, detail="Invalid tenant API key")
     return {"tenant_id": tenant_id, "officer_id": officer_id}
+
+
+def _tenant_ctx(
+    x_tenant_id: str = Header(..., alias="X-Tenant-ID"),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> dict[str, str]:
+    tenant_id = x_tenant_id.strip()
+    if x_api_key:
+        if not service.repo.validate_tenant_api_key(tenant_id, x_api_key.strip()):
+            raise HTTPException(status_code=401, detail="Invalid tenant API key")
+    return {"tenant_id": tenant_id}
 
 
 @app.exception_handler(ValueError)
@@ -99,6 +151,24 @@ def create_document(payload: IngestRequest, ctx: dict[str, str | None] = Depends
     if payload.process_now:
         row = service.process_document(str(row["id"]), tenant_id, officer_id)
     return row
+
+
+@app.post("/portal/documents")
+def portal_submit_document(payload: PortalIngestRequest, ctx: dict[str, str] = Depends(_tenant_ctx)) -> dict[str, Any]:
+    tenant_id = str(ctx["tenant_id"])
+    return service.citizen_submit_document(
+        tenant_id=tenant_id,
+        citizen_id=payload.citizen_id,
+        file_name=payload.file_name,
+        raw_text=payload.raw_text,
+        metadata=payload.metadata,
+        process_now=payload.process_now,
+    )
+
+
+@app.get("/portal/citizens/{citizen_id}/documents")
+def portal_list_documents(citizen_id: str, ctx: dict[str, str] = Depends(_tenant_ctx)) -> list[dict[str, Any]]:
+    return service.list_citizen_documents(str(ctx["tenant_id"]), citizen_id)
 
 
 @app.post("/documents/{document_id}/process")
@@ -254,3 +324,98 @@ def create_tenant_api_key(
         "status": row.get("status"),
         "created_at": row.get("created_at"),
     }
+
+
+@app.get("/tenants/{tenant_id}/templates")
+def list_templates(
+    tenant_id: str,
+    document_type: str | None = None,
+    ctx: dict[str, str | None] = Depends(_ctx),
+) -> list[dict[str, Any]]:
+    if tenant_id != str(ctx["tenant_id"]):
+        raise HTTPException(status_code=403, detail="Cross-tenant access forbidden")
+    return service.list_tenant_templates(tenant_id, str(ctx["officer_id"]), document_type=document_type)
+
+
+@app.post("/tenants/{tenant_id}/templates")
+def upsert_template(
+    tenant_id: str,
+    payload: TemplateUpsertRequest,
+    ctx: dict[str, str | None] = Depends(_ctx),
+) -> dict[str, Any]:
+    if tenant_id != str(ctx["tenant_id"]):
+        raise HTTPException(status_code=403, detail="Cross-tenant access forbidden")
+    return service.save_tenant_template(
+        tenant_id=tenant_id,
+        officer_id=str(ctx["officer_id"]),
+        document_type=payload.document_type,
+        template_id=payload.template_id,
+        version=payload.version,
+        template_version=payload.template_version,
+        policy_rule_set_id=payload.policy_rule_set_id,
+        config=payload.config,
+        doc_subtype=payload.doc_subtype,
+        region_code=payload.region_code,
+        description=payload.description,
+        lifecycle_status=payload.lifecycle_status,
+        is_active=payload.is_active,
+    )
+
+
+@app.get("/tenants/{tenant_id}/rules")
+def list_rules(
+    tenant_id: str,
+    document_type: str | None = None,
+    ctx: dict[str, str | None] = Depends(_ctx),
+) -> list[dict[str, Any]]:
+    if tenant_id != str(ctx["tenant_id"]):
+        raise HTTPException(status_code=403, detail="Cross-tenant access forbidden")
+    return service.list_tenant_rules(tenant_id, str(ctx["officer_id"]), document_type=document_type)
+
+
+@app.post("/tenants/{tenant_id}/rules")
+def upsert_rule(
+    tenant_id: str,
+    payload: RuleUpsertRequest,
+    ctx: dict[str, str | None] = Depends(_ctx),
+) -> dict[str, Any]:
+    if tenant_id != str(ctx["tenant_id"]):
+        raise HTTPException(status_code=403, detail="Cross-tenant access forbidden")
+    return service.save_tenant_rule(
+        tenant_id=tenant_id,
+        officer_id=str(ctx["officer_id"]),
+        document_type=payload.document_type,
+        rule_name=payload.rule_name,
+        version=payload.version,
+        rule_set_id=payload.rule_set_id,
+        min_extract_confidence=payload.min_extract_confidence,
+        min_approval_confidence=payload.min_approval_confidence,
+        max_approval_risk=payload.max_approval_risk,
+        registry_required=payload.registry_required,
+        config=payload.config,
+        is_active=payload.is_active,
+    )
+
+
+@app.get("/tenants/{tenant_id}/officers")
+def list_officers(tenant_id: str, ctx: dict[str, str | None] = Depends(_ctx)) -> list[dict[str, Any]]:
+    if tenant_id != str(ctx["tenant_id"]):
+        raise HTTPException(status_code=403, detail="Cross-tenant access forbidden")
+    return service.list_officers(tenant_id, str(ctx["officer_id"]))
+
+
+@app.post("/tenants/{tenant_id}/officers")
+def upsert_officer(
+    tenant_id: str,
+    payload: OfficerUpsertRequest,
+    ctx: dict[str, str | None] = Depends(_ctx),
+) -> dict[str, Any]:
+    if tenant_id != str(ctx["tenant_id"]):
+        raise HTTPException(status_code=403, detail="Cross-tenant access forbidden")
+    return service.upsert_officer_account(
+        tenant_id=tenant_id,
+        admin_officer_id=str(ctx["officer_id"]),
+        target_officer_id=payload.officer_id,
+        role=payload.role,
+        status=payload.status,
+    )
