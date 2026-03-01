@@ -755,6 +755,16 @@ def _render_dashboard(
             counts.columns = ["State", "Count"]
             st.bar_chart(counts.set_index("State"))
 
+    _section("👥 Available Profiles")
+    profile_rows = [
+        {
+            "role": ROLE_META.get(r, {}).get("label", r),
+            "description": ROLE_META.get(r, {}).get("desc", ""),
+        }
+        for r in ALL_ROLES
+    ]
+    st.dataframe(pd.DataFrame(profile_rows), use_container_width=True, hide_index=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Intake & Processing
@@ -1036,7 +1046,9 @@ def _render_intake_processing(
 
 def _render_review_workbench(
     *, role: str, tenant_id: str, officer_id: str,
-    selected_doc: dict[str, Any] | None, selected_record: dict[str, Any],
+    docs: list[dict[str, Any]],
+    selected_doc: dict[str, Any] | None,
+    selected_record: dict[str, Any],
 ) -> None:
     _render_journey("Officer Review", ["Queue", "Evidence", "Explain", "Correct", "Decide", "Archive"], active_index=1)
 
@@ -1051,8 +1063,31 @@ def _render_review_workbench(
     except Exception as exc:
         st.error(str(exc))
 
+    _section("🗂️ Select Document")
+    doc_options = [""] + [str(d.get("id")) for d in docs if d.get("id")]
+    current_doc_id = str(st.session_state.get("selected_doc_id") or "")
+    if current_doc_id not in doc_options:
+        current_doc_id = ""
+    if st.session_state.get("review_doc_picker") not in doc_options:
+        st.session_state["review_doc_picker"] = current_doc_id
+    picked_doc_id = st.selectbox(
+        "Document to review",
+        doc_options,
+        format_func=lambda v: "— Select document —" if not v else v,
+        key="review_doc_picker",
+    )
+    if picked_doc_id and picked_doc_id != current_doc_id:
+        st.session_state["selected_doc_id"] = picked_doc_id
+        st.rerun()
+
+    if current_doc_id and (not selected_doc or str(selected_doc.get("id")) != current_doc_id):
+        selected_doc = next((d for d in docs if str(d.get("id")) == current_doc_id), None)
+        if selected_doc:
+            latest_record_row = service.repo.get_latest_document_record(tenant_id, current_doc_id)
+            selected_record = _unwrap_record(latest_record_row)
+
     if not selected_doc:
-        st.markdown('<div class="alert-info">Select a document from the sidebar to begin review.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="alert-info">No document selected. Pick one from the selector above.</div>', unsafe_allow_html=True)
         return
 
     try:
@@ -2562,9 +2597,15 @@ def main() -> None:
             st.error(docs_error)
 
         doc_ids = [str(d.get("id")) for d in docs if d.get("id")]
-        selected_doc_id = st.selectbox("📄 Document", ["—"] + doc_ids, index=0)
-        if selected_doc_id == "—":
-            selected_doc_id = ""
+        selected_doc_options = [""] + doc_ids
+        if st.session_state.get("selected_doc_id") not in selected_doc_options:
+            st.session_state["selected_doc_id"] = ""
+        selected_doc_id = st.selectbox(
+            "📄 Document",
+            selected_doc_options,
+            format_func=lambda v: "— Select document —" if not v else v,
+            key="selected_doc_id",
+        )
 
         if selected_doc_id:
             sel = next((d for d in docs if str(d.get("id")) == selected_doc_id), None)
@@ -2618,7 +2659,14 @@ def main() -> None:
     elif page == "📥 Intake & Processing":
         _render_intake_processing(role=role, tenant_id=tenant_id, officer_id=officer_id, docs=docs, selected_doc=selected_doc)
     elif page == "🔍 Review Workbench":
-        _render_review_workbench(role=role, tenant_id=tenant_id, officer_id=officer_id, selected_doc=selected_doc, selected_record=selected_record)
+        _render_review_workbench(
+            role=role,
+            tenant_id=tenant_id,
+            officer_id=officer_id,
+            docs=docs,
+            selected_doc=selected_doc,
+            selected_record=selected_record,
+        )
     elif page == "⚖️ Dispute Desk":
         _render_dispute_desk(role=role, tenant_id=tenant_id, officer_id=officer_id, selected_doc=selected_doc)
     elif page == "🛡️ Fraud & Authenticity":
