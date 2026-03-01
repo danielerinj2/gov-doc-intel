@@ -1847,13 +1847,25 @@ def main() -> None:
 
         st.markdown("---")
 
-        # Navigation with override support for dashboard quick actions
+        # Navigation with persisted state so form submits do not jump back to Dashboard.
         accessible = [p for p in PAGES if role in PAGE_ACCESS[p]]
         nav_override = st.session_state.pop("_nav_override", None)
-        default_idx = 0
         if nav_override and nav_override in accessible:
-            default_idx = accessible.index(nav_override)
-        page = st.radio("Navigation", accessible, index=default_idx, label_visibility="collapsed")
+            st.session_state["nav_page"] = nav_override
+        elif st.session_state.get("nav_page") not in accessible:
+            st.session_state["nav_page"] = accessible[0] if accessible else ""
+
+        page_index = 0
+        if accessible and st.session_state.get("nav_page") in accessible:
+            page_index = accessible.index(st.session_state["nav_page"])
+
+        page = st.radio(
+            "Navigation",
+            accessible,
+            index=page_index,
+            key="nav_page",
+            label_visibility="collapsed",
+        )
 
         st.markdown("---")
 
