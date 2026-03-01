@@ -2476,38 +2476,32 @@ def _resolve_access_context() -> tuple[str, str, str] | None:
     if profile and str(profile.get("status", "ACTIVE")).upper() == "ACTIVE":
         return str(profile.get("tenant_id")), str(profile.get("role")), officer_id
 
-    st.warning("Your account is authenticated but not yet linked to an access profile.")
-    with st.form("complete_profile_form"):
-        workspace_id = _workspace_id_default()
-        role = st.selectbox(
-            "Role",
-            ALL_ROLES,
-            format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
-            key="complete_profile_role",
+    # Auto-link any authenticated user to a default access profile.
+    workspace_id = _workspace_id_default() or "workspace-default"
+    default_role = ROLE_VERIFIER
+    display_name = str(st.session_state.get(AUTH_EMAIL_KEY) or officer_id)
+    try:
+        service.register_officer(
+            officer_id=officer_id,
+            tenant_id=workspace_id,
+            role=default_role,
+            display_name=display_name,
         )
-        submit_profile = st.form_submit_button("Complete Profile", use_container_width=True)
-    if submit_profile:
-        if not workspace_id:
-            st.error("Workspace is not configured.")
-        else:
-            try:
-                service.register_officer(
-                    officer_id=officer_id,
-                    tenant_id=workspace_id,
-                    role=role,
-                    display_name=workspace_id,
-                )
-                service.repo.upsert_tenant_membership(
-                    user_id=officer_id,
-                    tenant_id=workspace_id,
-                    role=role,
-                    status="ACTIVE",
-                )
-                st.success("Profile linked.")
-                st.rerun()
-            except Exception as exc:
-                st.error(str(exc))
-    return None
+        service.repo.upsert_tenant_membership(
+            user_id=officer_id,
+            tenant_id=workspace_id,
+            role=default_role,
+            status="ACTIVE",
+        )
+    except Exception:
+        pass
+
+    profile = service.get_officer_profile(officer_id)
+    if profile and str(profile.get("status", "ACTIVE")).upper() == "ACTIVE":
+        return str(profile.get("tenant_id")), str(profile.get("role")), officer_id
+
+    # Last-resort fallback so authentication does not block app access.
+    return workspace_id, default_role, officer_id
 
 
 def main() -> None:
