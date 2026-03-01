@@ -2485,14 +2485,9 @@ def main() -> None:
         elif st.session_state.get("nav_page") not in accessible:
             st.session_state["nav_page"] = accessible[0] if accessible else ""
 
-        page_index = 0
-        if accessible and st.session_state.get("nav_page") in accessible:
-            page_index = accessible.index(st.session_state["nav_page"])
-
         page = st.radio(
             "Navigation",
             accessible,
-            index=page_index,
             key="nav_page",
             label_visibility="collapsed",
         )
