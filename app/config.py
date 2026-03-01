@@ -67,7 +67,7 @@ def load_settings() -> Settings:
         pulsar_topic=os.getenv("PULSAR_TOPIC", "persistent://public/default/document-events").strip(),
         issuer_registry_base_url=os.getenv("ISSUER_REGISTRY_BASE_URL", "").strip().rstrip("/"),
         issuer_registry_token=os.getenv("ISSUER_REGISTRY_TOKEN", "").strip(),
-        ocr_backend=os.getenv("OCR_BACKEND", "tesseract").strip().lower(),
+        ocr_backend=os.getenv("OCR_BACKEND", "paddleocr").strip().lower(),
         ocr_default_lang=os.getenv("OCR_DEFAULT_LANG", "eng+hin").strip(),
         authenticity_backend=os.getenv("AUTHENTICITY_BACKEND", "heuristic").strip().lower(),
         fraud_calibration_weights=os.getenv("FRAUD_CALIBRATION_WEIGHTS", "").strip(),

@@ -289,8 +289,11 @@ Environment flags in `.env`:
   - `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_TOPIC`
   - `PULSAR_SERVICE_URL`, `PULSAR_TOPIC`
 - OCR:
-  - `OCR_BACKEND=heuristic|tesseract|easyocr`
-  - `OCR_DEFAULT_LANG=eng`
+  - `OCR_BACKEND=heuristic|paddleocr|tesseract|easyocr`
+  - `OCR_DEFAULT_LANG=eng+hin`
+  - For PaddleOCR production, install Paddle runtime:
+    - CPU: `pip install paddlepaddle`
+    - GPU: `pip install paddlepaddle-gpu`
 - Authenticity/fraud:
   - `AUTHENTICITY_BACKEND=heuristic`
   - `FRAUD_CALIBRATION_WEIGHTS={"image":0.35,"behavioral":0.35,"issuer":0.30}`
