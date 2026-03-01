@@ -2150,7 +2150,6 @@ def _render_auth_gate() -> bool:
             pwd_su = st.text_input("Password", type="password")
             pwd_confirm = st.text_input("Confirm Password", type="password")
             dept_id = st.text_input("Department ID", value="", placeholder="dept-education")
-            dept_name = st.text_input("Department Display Name (optional)", value="")
             role_su = st.selectbox(
                 "Role",
                 ALL_ROLES,
@@ -2180,7 +2179,7 @@ def _render_auth_gate() -> bool:
                             officer_id=user_id,
                             tenant_id=dept_id.strip(),
                             role=role_su,
-                            display_name=(dept_name.strip() or dept_id.strip()),
+                            display_name=dept_id.strip(),
                         )
                         service.repo.upsert_tenant_membership(
                             user_id=user_id,
