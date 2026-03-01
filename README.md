@@ -153,6 +153,7 @@ Detailed governance notes: `docs/PART4_GOVERNANCE.md`.
 - `tenant_risk_register` (risk and mitigation registry)
 
 Executive program/tender summary: `docs/PART5_EXECUTIVE_PRD.md`.
+Product-facing PRD: `docs/prd.md`.
 
 ## Part-2 Data Contracts
 Strict Pydantic schemas are implemented in:
