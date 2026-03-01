@@ -14,14 +14,9 @@ create table if not exists public.officers (
     role text not null check (
         role in (
             'verifier',
-            'verifier',
             'senior_verifier',
             'auditor',
-            'verifier',
-            'verifier',
-            'senior_verifier',
-            'senior_verifier',
-            'auditor'
+            'platform_admin'
         )
     ),
     status text not null default 'ACTIVE' check (status in ('ACTIVE', 'SUSPENDED')),
@@ -32,14 +27,9 @@ alter table public.officers drop constraint if exists officers_role_check;
 alter table public.officers add constraint officers_role_check check (
     role in (
         'verifier',
-        'verifier',
         'senior_verifier',
         'auditor',
-        'verifier',
-        'verifier',
-        'senior_verifier',
-        'senior_verifier',
-        'auditor'
+        'platform_admin'
     )
 );
 

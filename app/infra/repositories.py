@@ -440,6 +440,53 @@ class Repository:
             ]
         return rows
 
+    def ensure_tenant(
+        self,
+        tenant_id: str,
+        display_name: str | None = None,
+        residency_region: str = "default",
+    ) -> dict[str, Any]:
+        row = {
+            "tenant_id": tenant_id,
+            "display_name": (display_name or tenant_id).strip() or tenant_id,
+            "residency_region": residency_region,
+            "status": "ACTIVE",
+            "created_at": _now(),
+        }
+        if self.client:
+            exec_query(self.client.table("tenants").upsert(row, on_conflict="tenant_id"))
+            result = exec_query(
+                self.client.table("tenants").select("*").eq("tenant_id", tenant_id).limit(1)
+            )
+            if result and result.get("data"):
+                data = result["data"]
+                return data[0] if data else row
+
+        if tenant_id not in MemoryStore.tenant_policies:
+            MemoryStore.tenant_policies[tenant_id] = self._default_policy(tenant_id)
+        return row
+
+    def upsert_tenant_membership(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str,
+        role: str,
+        status: str = "ACTIVE",
+    ) -> dict[str, Any]:
+        row = {
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+            "role": _normalize_role(role),
+            "status": status,
+            "created_at": _now(),
+        }
+        if self.client:
+            exec_query(
+                self.client.table("tenant_memberships").upsert(row, on_conflict="user_id,tenant_id")
+            )
+        return row
+
     def list_documents_by_state(self, tenant_id: str, state: DocumentState) -> list[dict[str, Any]]:
         if self.client:
             result = exec_query(

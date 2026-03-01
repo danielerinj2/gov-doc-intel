@@ -12,14 +12,9 @@ create table if not exists public.tenant_memberships (
     role text not null check (
         role in (
             'verifier',
-            'verifier',
             'senior_verifier',
             'auditor',
-            'verifier',
-            'verifier',
-            'senior_verifier',
-            'senior_verifier',
-            'auditor'
+            'platform_admin'
         )
     ),
     status text not null default 'ACTIVE' check (status in ('ACTIVE', 'SUSPENDED')),
@@ -31,14 +26,9 @@ alter table public.tenant_memberships drop constraint if exists tenant_membershi
 alter table public.tenant_memberships add constraint tenant_memberships_role_check check (
     role in (
         'verifier',
-        'verifier',
         'senior_verifier',
         'auditor',
-        'verifier',
-        'verifier',
-        'senior_verifier',
-        'senior_verifier',
-        'auditor'
+        'platform_admin'
     )
 );
 
@@ -85,7 +75,7 @@ stable
 security definer
 set search_path = public
 as $$
-    select public.has_platform_role(array['platform_admin', 'platform_admin'])
+    select public.has_platform_role(array['platform_admin'])
     or exists (
         select 1
         from public.tenant_memberships tm

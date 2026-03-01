@@ -2053,32 +2053,214 @@ def _render_ml_training(*, role: str, tenant_id: str, officer_id: str) -> None:
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
 
-def main() -> None:
-    # ── Sidebar ───────────────────────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("### 🔐 Access")
-        tenant_id = st.text_input("Tenant", value="dept-education").strip()
+AUTH_USER_ID_KEY = "auth_user_id"
+AUTH_EMAIL_KEY = "auth_email"
+
+
+def _auth_client() -> Any | None:
+    client = service.repo.client
+    if client is None:
+        return None
+    return getattr(client, "auth", None)
+
+
+def _extract_auth_identity(response: Any) -> tuple[str | None, str | None]:
+    user = getattr(response, "user", None)
+    if user is None and isinstance(response, dict):
+        user = response.get("user")
+    if user is None:
+        session = getattr(response, "session", None)
+        if session is not None:
+            user = getattr(session, "user", None)
+            if user is None and isinstance(session, dict):
+                user = session.get("user")
+
+    if user is None:
+        return None, None
+
+    if isinstance(user, dict):
+        return str(user.get("id") or ""), str(user.get("email") or "")
+    return str(getattr(user, "id", "") or ""), str(getattr(user, "email", "") or "")
+
+
+def _set_auth_identity(user_id: str, email: str | None) -> None:
+    st.session_state[AUTH_USER_ID_KEY] = user_id
+    st.session_state[AUTH_EMAIL_KEY] = (email or "").strip()
+
+
+def _clear_auth_identity() -> None:
+    st.session_state.pop(AUTH_USER_ID_KEY, None)
+    st.session_state.pop(AUTH_EMAIL_KEY, None)
+    st.session_state.pop("nav_page", None)
+    st.session_state.pop("_nav_override", None)
+
+
+def _render_auth_gate() -> bool:
+    if st.session_state.get(AUTH_USER_ID_KEY):
+        return True
+
+    st.title("🔐 GovDocIQ Access")
+    st.caption("Sign in to access your department workspace.")
+
+    auth = _auth_client()
+    if not service.repo.using_supabase or auth is None:
+        st.error(
+            "Supabase authentication is not available. "
+            "Configure `SUPABASE_URL` and `SUPABASE_KEY` to enable login/signup."
+        )
+        return False
+
+    sign_in_tab, sign_up_tab = st.tabs(["Sign In", "Sign Up"])
+
+    with sign_in_tab:
+        with st.form("auth_sign_in_form"):
+            email = st.text_input("Email", value="", placeholder="name@department.gov")
+            password = st.text_input("Password", type="password")
+            submit_sign_in = st.form_submit_button("Sign In", use_container_width=True)
+        if submit_sign_in:
+            try:
+                response = auth.sign_in_with_password(
+                    {"email": email.strip(), "password": password}
+                )
+                user_id, user_email = _extract_auth_identity(response)
+                if not user_id:
+                    st.error("Sign in failed. Check credentials or email verification status.")
+                else:
+                    _set_auth_identity(user_id, user_email or email)
+                    st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    with sign_up_tab:
+        with st.form("auth_sign_up_form"):
+            email_su = st.text_input("Email", value="", placeholder="name@department.gov")
+            pwd_su = st.text_input("Password", type="password")
+            pwd_confirm = st.text_input("Confirm Password", type="password")
+            dept_id = st.text_input("Department ID", value="", placeholder="dept-education")
+            dept_name = st.text_input("Department Display Name (optional)", value="")
+            role_su = st.selectbox(
+                "Role",
+                ALL_ROLES,
+                format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
+            )
+            submit_sign_up = st.form_submit_button("Create Account", use_container_width=True)
+
+        if submit_sign_up:
+            if pwd_su != pwd_confirm:
+                st.error("Passwords do not match.")
+            elif len(pwd_su) < 8:
+                st.error("Password must be at least 8 characters.")
+            elif not dept_id.strip():
+                st.error("Department ID is required.")
+            else:
+                try:
+                    response = auth.sign_up(
+                        {"email": email_su.strip(), "password": pwd_su}
+                    )
+                    user_id, user_email = _extract_auth_identity(response)
+                    if not user_id:
+                        st.info(
+                            "Sign-up request submitted. Verify your email, then sign in."
+                        )
+                    else:
+                        service.register_officer(
+                            officer_id=user_id,
+                            tenant_id=dept_id.strip(),
+                            role=role_su,
+                            display_name=(dept_name.strip() or dept_id.strip()),
+                        )
+                        service.repo.upsert_tenant_membership(
+                            user_id=user_id,
+                            tenant_id=dept_id.strip(),
+                            role=role_su,
+                            status="ACTIVE",
+                        )
+                        _set_auth_identity(user_id, user_email or email_su)
+                        st.success("Account created and linked. Signed in.")
+                        st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
+    return False
+
+
+def _resolve_access_context() -> tuple[str, str, str] | None:
+    officer_id = str(st.session_state.get(AUTH_USER_ID_KEY) or "").strip()
+    if not officer_id:
+        return None
+
+    profile = service.get_officer_profile(officer_id)
+    if profile and str(profile.get("status", "ACTIVE")).upper() == "ACTIVE":
+        return str(profile.get("tenant_id")), str(profile.get("role")), officer_id
+
+    st.warning("Your account is authenticated but not yet linked to a department profile.")
+    with st.form("complete_profile_form"):
+        dept_id = st.text_input("Department ID", value="", placeholder="dept-education")
+        dept_name = st.text_input("Department Display Name (optional)", value="")
         role = st.selectbox(
             "Role",
             ALL_ROLES,
-            index=0,
             format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
+            key="complete_profile_role",
         )
-        officer_id = st.text_input("Officer ID", value="officer-001").strip()
+        submit_profile = st.form_submit_button("Complete Profile", use_container_width=True)
+    if submit_profile:
+        if not dept_id.strip():
+            st.error("Department ID is required.")
+        else:
+            try:
+                service.register_officer(
+                    officer_id=officer_id,
+                    tenant_id=dept_id.strip(),
+                    role=role,
+                    display_name=(dept_name.strip() or dept_id.strip()),
+                )
+                service.repo.upsert_tenant_membership(
+                    user_id=officer_id,
+                    tenant_id=dept_id.strip(),
+                    role=role,
+                    status="ACTIVE",
+                )
+                st.success("Profile linked.")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+    return None
 
+
+def main() -> None:
+    if not _render_auth_gate():
+        return
+
+    access = _resolve_access_context()
+    if access is None:
+        return
+    tenant_id, role, officer_id = access
+
+    # ── Sidebar ───────────────────────────────────────────────────────────────
+    with st.sidebar:
+        st.markdown("### 🔐 Access")
         meta = ROLE_META.get(role, {"icon": "👤", "label": role, "color": "#90a4ae"})
         st.markdown(
             f'<div style="padding:0.3rem 0.7rem;border-radius:6px;background:{meta["color"]}15;'
             f'border-left:3px solid {meta["color"]};font-size:0.8rem;margin:0.4rem 0;color:{meta["color"]}">'
             f'{meta["icon"]} <strong>{meta["label"]}</strong></div>',
-            unsafe_allow_html=True)
+            unsafe_allow_html=True,
+        )
+        if st.session_state.get(AUTH_EMAIL_KEY):
+            st.caption(f"Signed in as `{st.session_state[AUTH_EMAIL_KEY]}`")
+        st.caption(f"Department: `{tenant_id}`")
+        st.caption(f"Officer ID: `{officer_id}`")
 
-        if st.button("🔗 Register Officer", use_container_width=True):
+        if st.button("🚪 Sign Out", use_container_width=True):
             try:
-                row = service.register_officer(officer_id, tenant_id, role)
-                st.success(f"Bound → {row['role']}")
+                auth = _auth_client()
+                if auth is not None:
+                    auth.sign_out()
             except Exception as exc:
                 st.error(str(exc))
+            _clear_auth_identity()
+            st.rerun()
 
         st.markdown("---")
 
@@ -2128,6 +2310,25 @@ def main() -> None:
             st.caption(f"Persistence: {using}")
             st.caption(f"OCR: {settings.ocr_backend} · Auth: {settings.authenticity_backend}")
             st.caption(f"DR: {service.dr_service.describe()}")
+            st.write(
+                {
+                    "SCHEMA_READY": {
+                        "part2": service.repo.part2_schema_ready,
+                        "part3": service.repo.part3_schema_ready,
+                        "part4": service.repo.part4_schema_ready,
+                        "part5": service.repo.part5_schema_ready,
+                    }
+                }
+            )
+            if st.button("🧪 Run Supabase Storage Probe", use_container_width=True):
+                try:
+                    probe = service.supabase_persistence_probe(
+                        tenant_id=tenant_id,
+                        officer_id=officer_id,
+                    )
+                    st.json(probe)
+                except Exception as exc:
+                    st.error(str(exc))
 
     # ── Resolve selections ────────────────────────────────────────────────────
     policy = service.repo.get_tenant_policy(tenant_id)
@@ -2168,7 +2369,7 @@ def main() -> None:
         _render_ml_training(role=role, tenant_id=tenant_id, officer_id=officer_id)
 
     st.divider()
-    st.caption("Tenant-scoped · Role-gated · Auditable · Explainable AI")
+    st.caption("Department-scoped · Role-gated · Auditable · Explainable AI")
 
 
 if __name__ == "__main__":

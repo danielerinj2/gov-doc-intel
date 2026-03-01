@@ -110,11 +110,47 @@ class DocumentService:
             ]
         )
 
-    def register_officer(self, officer_id: str, tenant_id: str, role: str) -> dict[str, Any]:
+    def register_officer(self, officer_id: str, tenant_id: str, role: str, display_name: str | None = None) -> dict[str, Any]:
+        self.repo.ensure_tenant(tenant_id=tenant_id, display_name=display_name or tenant_id)
         officer = Officer(officer_id=officer_id, tenant_id=tenant_id, role=role)
         row = self.repo.upsert_officer(officer)
+        self.repo.upsert_tenant_membership(user_id=officer_id, tenant_id=tenant_id, role=role, status="ACTIVE")
         self.repo.get_tenant_policy(tenant_id, create_if_missing=True)
         return row
+
+    def get_officer_profile(self, officer_id: str) -> dict[str, Any] | None:
+        return self.repo.get_officer(officer_id)
+
+    def supabase_persistence_probe(self, *, tenant_id: str, officer_id: str) -> dict[str, Any]:
+        profile = self._authorize(officer_id, tenant_id, None)
+        if not self.repo.using_supabase:
+            return {
+                "ok": False,
+                "persistence": "memory",
+                "message": "Supabase is not active; currently using in-memory repository.",
+            }
+
+        # Non-destructive write/read checks.
+        upserted = self.register_officer(
+            officer_id=officer_id,
+            tenant_id=tenant_id,
+            role=str(profile.get("role", "verifier")),
+            display_name=tenant_id,
+        )
+        policy = self.repo.get_tenant_policy(tenant_id, create_if_missing=True)
+        record = self.repo.get_officer(officer_id)
+        return {
+            "ok": bool(record) and bool(policy),
+            "persistence": "supabase",
+            "officer_id": upserted.get("officer_id"),
+            "tenant_id": upserted.get("tenant_id"),
+            "schema_ready": {
+                "part2": self.repo.part2_schema_ready,
+                "part3": self.repo.part3_schema_ready,
+                "part4": self.repo.part4_schema_ready,
+                "part5": self.repo.part5_schema_ready,
+            },
+        }
 
     def create_tenant_api_key(self, tenant_id: str, officer_id: str, key_label: str, raw_key: str) -> dict[str, Any]:
         self._authorize(officer_id, tenant_id, ADMIN_ROLES)
