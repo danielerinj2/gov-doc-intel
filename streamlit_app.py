@@ -304,7 +304,7 @@ PAGES = [
     "📋 Audit Trail",
     "📊 Governance & KPI",
     "🖥️ Ops Monitor",
-    "🔗 Integrations",
+    "🧩 Integrations",
     "📴 Offline Sync",
     "🤖 ML Training",
 ]
@@ -319,7 +319,7 @@ PAGE_ACCESS: dict[str, set[str]] = {
     "📋 Audit Trail":           AUDIT_ROLES | PLATFORM_ROLES,
     "📊 Governance & KPI":      SENIOR_ROLES | AUDIT_ROLES | PLATFORM_ROLES,
     "🖥️ Ops Monitor":           SENIOR_ROLES | AUDIT_ROLES | PLATFORM_ROLES,
-    "🔗 Integrations":          SENIOR_ROLES | PLATFORM_ROLES,
+    "🧩 Integrations":          SENIOR_ROLES | PLATFORM_ROLES,
     "📴 Offline Sync":          WRITE_ROLES,
     "🤖 ML Training":           SENIOR_ROLES | AUDIT_ROLES | PLATFORM_ROLES,
 }
@@ -730,11 +730,11 @@ def _render_dashboard(
                 st.rerun()
         with c3:
             st.markdown(_action_card(
-                "🔗", "Integrations",
+                "🧩", "Integrations",
                 "API keys, webhooks, and batch export across tenants."
             ), unsafe_allow_html=True)
             if st.button("Go to Integrations →", key="qa_plat_int", use_container_width=True):
-                st.session_state["_nav_override"] = "🔗 Integrations"
+                st.session_state["_nav_override"] = "🧩 Integrations"
                 st.rerun()
 
     # ── Recent activity + documents ───────────────────────────────────────────
@@ -2374,7 +2374,7 @@ def main() -> None:
         _render_governance_kpi(role=role, tenant_id=tenant_id, officer_id=officer_id)
     elif page == "🖥️ Ops Monitor":
         _render_ops_monitor(role=role, tenant_id=tenant_id, officer_id=officer_id)
-    elif page == "🔗 Integrations":
+    elif page == "🧩 Integrations":
         _render_integrations(role=role, tenant_id=tenant_id, officer_id=officer_id)
     elif page == "📴 Offline Sync":
         _render_offline_sync(role=role, tenant_id=tenant_id, officer_id=officer_id)
