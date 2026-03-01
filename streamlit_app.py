@@ -2462,10 +2462,20 @@ def _render_auth_gate() -> bool:
                         {"email": email_su.strip(), "password": pwd_su}
                     )
                     user_id, user_email = _extract_auth_identity(response)
+                    target_signup_email = (user_email or email_su.strip())
+                    send_result = email_adapter.send_email(
+                        to_email=target_signup_email,
+                        template_type="signup",
+                        user_name=_default_user_name(full_name_su, target_signup_email),
+                        role=_role_label(role_su),
+                        user_email=target_signup_email,
+                    )
                     if not user_id:
                         st.info(
                             "Sign-up request submitted. Verify your email, then sign in."
                         )
+                        if not send_result.ok:
+                            st.info(f"Signup confirmation email not sent: {send_result.detail}")
                     else:
                         service.register_officer(
                             officer_id=user_id,
@@ -2481,13 +2491,6 @@ def _render_auth_gate() -> bool:
                         )
                         _set_auth_identity(user_id, user_email or email_su)
                         st.success("Account created and linked. Signed in.")
-                        send_result = email_adapter.send_email(
-                            to_email=(user_email or email_su.strip()),
-                            template_type="signup",
-                            user_name=_default_user_name(full_name_su, user_email or email_su),
-                            role=_role_label(role_su),
-                            user_email=(user_email or email_su.strip()),
-                        )
                         if not send_result.ok:
                             st.info(f"Signup confirmation email not sent: {send_result.detail}")
                         st.rerun()
