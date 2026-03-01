@@ -1013,6 +1013,9 @@ def _render_review_workbench(
 ) -> None:
     _render_journey("Officer Review", ["Queue", "Evidence", "Explain", "Correct", "Decide", "Archive"], active_index=1)
 
+    can_review = role in REVIEW_ROLES
+    review_states = {"WAITING_FOR_REVIEW", "DISPUTED", "REVIEW_IN_PROGRESS"}
+
     try:
         assignments = service.list_review_assignments(tenant_id, officer_id)
         if assignments:
@@ -1025,148 +1028,238 @@ def _render_review_workbench(
         st.markdown('<div class="alert-info">Select a document from the sidebar to begin review.</div>', unsafe_allow_html=True)
         return
 
+    try:
+        all_docs = service.list_documents(tenant_id, officer_id)
+        queue_docs = [d for d in all_docs if str(d.get("state", "")).upper() in review_states]
+        if queue_docs:
+            _section("🗂️ Review Queue Snapshot")
+            qdf = pd.DataFrame(queue_docs)
+            show_cols = [c for c in ["id", "state", "decision", "confidence", "risk_score", "created_at"] if c in qdf.columns]
+            st.dataframe(qdf[show_cols], use_container_width=True, hide_index=True)
+    except Exception:
+        pass
+
     extraction_out = dict(selected_record.get("extraction_output") or {})
     validation_out = dict(selected_record.get("validation_output") or {})
     visual_out = dict(selected_record.get("visual_authenticity_output") or {})
     explainability = dict(selected_record.get("explainability") or {})
     classification_out = dict(selected_record.get("classification_output") or {})
+    left_col, right_col = st.columns([2, 1])
+    doc_id = str(selected_doc.get("id"))
+    current_state = str(selected_doc.get("state", "")).upper()
 
-    t1, t2, t3, t4, t5 = st.tabs(["📑 Fields", "✔️ Validation", "🔏 Authenticity", "🧠 Explain", "✏️ Decide"])
+    with left_col:
+        lt1, lt2, lt3, lt4 = st.tabs(["📑 Fields", "✔️ Validation", "🔏 Authenticity", "🧠 Explain"])
 
-    with t1:
-        _section("Extracted Fields")
-        doc_type = classification_out.get("doc_type") or classification_out.get("document_type") or "UNKNOWN"
-        cls_conf = classification_out.get("confidence")
-        st.markdown(f"**Classified as:** `{doc_type}`")
-        if cls_conf is not None:
-            _confidence_bar(float(cls_conf), "Classification Confidence")
-        extracted = _normalize_extracted_fields(extraction_out)
-        if extracted:
-            st.dataframe(pd.DataFrame(extracted), use_container_width=True, hide_index=True)
-            conf_fields = [r for r in extracted if r.get("confidence") is not None or r.get("extraction_confidence") is not None]
-            if conf_fields:
-                _section("Per-Field Confidence")
-                for r in conf_fields:
-                    cv = r.get("confidence") or r.get("extraction_confidence")
-                    try:
-                        _confidence_bar(float(cv), str(r.get("field_name") or r.get("key") or "field"))
-                    except Exception:
-                        pass
-        else:
-            st.caption("No extracted fields available.")
-
-        _section("Cross-Verification")
-        dv = (selected_doc.get("derived") or {}).get("validation", {})
-        pf_status = str(dv.get("prefilled_consistency_status", "NOT_AVAILABLE")).upper()
-        if pf_status == "CONSISTENT":
-            pf_status = "PASS"
-        pf_match = dv.get("prefilled_match_count", 0)
-        pf_mismatch = dv.get("prefilled_mismatch_count", 0)
-        c = "#66bb6a" if pf_status == "PASS" else "#ef5350" if pf_mismatch > 0 else "#546e7a"
-        st.markdown(
-            f'<div style="padding:0.45rem 0.9rem;border-radius:6px;background:{c}15;border-left:3px solid {c};font-size:0.85rem">'
-            f'{pf_status} — ✅ {pf_match} match · ⚠️ {pf_mismatch} mismatch</div>', unsafe_allow_html=True)
-        mm = list(dv.get("prefilled_mismatches") or [])
-        if mm:
-            st.dataframe(pd.DataFrame(mm), use_container_width=True, hide_index=True)
-
-    with t2:
-        _section("Validation Results")
-        overall = validation_out.get("overall_status", "—")
-        rule_set = validation_out.get("rule_set_id", "—")
-        vc = "#66bb6a" if overall == "PASS" else "#ef5350" if overall == "FAIL" else "#ffb74d"
-        st.markdown(
-            f'<div style="padding:0.5rem 0.9rem;border-radius:6px;background:{vc}18;border:1px solid {vc};font-weight:700;font-size:0.9rem">'
-            f'{overall} · Rule Set: <code>{rule_set}</code></div>', unsafe_allow_html=True)
-        fr = validation_out.get("field_results") or []
-        if fr:
-            st.dataframe(pd.DataFrame(fr), use_container_width=True, hide_index=True)
-            failed = [r for r in fr if str(r.get("status", "")).upper() in {"FAIL", "FAILED", "ERROR"}]
-            if failed:
-                st.markdown(f'<div class="alert-warn">⚠️ {len(failed)} field(s) failed validation.</div>', unsafe_allow_html=True)
-
-    with t3:
-        _section("Stamp, Seal & Signature Detection")
-        auth_score = visual_out.get("visual_authenticity_score")
-        if auth_score is not None:
-            _confidence_bar(float(auth_score), "Visual Authenticity")
-        markers = visual_out.get("markers") or []
-        if markers:
-            st.dataframe(pd.DataFrame(markers), use_container_width=True, hide_index=True)
-            for m in markers:
-                mt = str(m.get("type") or m.get("marker_type") or "MARKER")
-                present = m.get("present") or m.get("detected")
-                pos = m.get("position") or m.get("bounding_box")
-                ic = "✅" if present else "❌"
-                line = f"{ic} **{mt}**"
-                if pos:
-                    line += f" · `{pos}`"
-                st.markdown(line)
-        else:
-            st.caption("No marker data — visual authenticity score only.")
-        forensics = visual_out.get("image_forensics") or {}
-        tamper = forensics.get("tamper_signals", [])
-        if tamper:
-            st.markdown(f'<div class="alert-warn">🔴 {len(tamper)} tamper signal(s).</div>', unsafe_allow_html=True)
-            for t_item in tamper:
-                st.markdown(f"- ⚠️ {t_item}")
-        else:
-            st.markdown('<div class="alert-success">✅ No tamper signals.</div>', unsafe_allow_html=True)
-
-    with t4:
-        _section("Explainability")
-        st.caption("AI-generated reasons to help officers understand the verification outcome.")
-        doc_exp = explainability.get("document_explanations", [])
-        field_exp = explainability.get("field_explanations", [])
-        if doc_exp:
-            for i, r in enumerate(doc_exp, 1):
-                st.markdown(f"{i}. {r}")
-        else:
-            st.caption("No document-level explanations.")
-        if field_exp:
-            _section("Field-Level Reasons")
-            if isinstance(field_exp, list) and field_exp and isinstance(field_exp[0], dict):
-                st.dataframe(pd.DataFrame(field_exp), use_container_width=True, hide_index=True)
+        with lt1:
+            _section("Extracted Fields")
+            doc_type = classification_out.get("doc_type") or classification_out.get("document_type") or "UNKNOWN"
+            cls_conf = classification_out.get("confidence")
+            st.markdown(f"**Classified as:** `{doc_type}`")
+            if cls_conf is not None:
+                _confidence_bar(float(cls_conf), "Classification Confidence")
+            extracted = _normalize_extracted_fields(extraction_out)
+            if extracted:
+                st.dataframe(pd.DataFrame(extracted), use_container_width=True, hide_index=True)
+                conf_fields = [r for r in extracted if r.get("confidence") is not None or r.get("extraction_confidence") is not None]
+                if conf_fields:
+                    _section("Per-Field Confidence")
+                    for r in conf_fields:
+                        cv = r.get("confidence") or r.get("extraction_confidence")
+                        try:
+                            _confidence_bar(float(cv), str(r.get("field_name") or r.get("key") or "field"))
+                        except Exception:
+                            pass
             else:
-                st.write(field_exp)
+                st.caption("No extracted fields available.")
 
-        _section("Citizen-Facing Preview")
-        decision = selected_doc.get("decision") or "PENDING"
-        reasons = "; ".join(str(r) for r in doc_exp[:3]) if doc_exp else "Review in progress."
-        st.text_area("Plain-language summary", value=f"Status: {decision}. Reason(s): {reasons}", height=65, disabled=True)
+            _section("Cross-Verification")
+            dv = (selected_doc.get("derived") or {}).get("validation", {})
+            pf_status = str(dv.get("prefilled_consistency_status", "NOT_AVAILABLE")).upper()
+            if pf_status == "CONSISTENT":
+                pf_status = "PASS"
+            pf_match = dv.get("prefilled_match_count", 0)
+            pf_mismatch = dv.get("prefilled_mismatch_count", 0)
+            c = "#66bb6a" if pf_status == "PASS" else "#ef5350" if pf_mismatch > 0 else "#546e7a"
+            st.markdown(
+                f'<div style="padding:0.45rem 0.9rem;border-radius:6px;background:{c}15;border-left:3px solid {c};font-size:0.85rem">'
+                f'{pf_status} — ✅ {pf_match} match · ⚠️ {pf_mismatch} mismatch</div>',
+                unsafe_allow_html=True,
+            )
+            mm = list(dv.get("prefilled_mismatches") or [])
+            if mm:
+                st.dataframe(pd.DataFrame(mm), use_container_width=True, hide_index=True)
 
-    with t5:
-        can_review = role in REVIEW_ROLES
+        with lt2:
+            _section("Validation Results")
+            overall = validation_out.get("overall_status", "—")
+            rule_set = validation_out.get("rule_set_id", "—")
+            vc = "#66bb6a" if overall == "PASS" else "#ef5350" if overall == "FAIL" else "#ffb74d"
+            st.markdown(
+                f'<div style="padding:0.5rem 0.9rem;border-radius:6px;background:{vc}18;border:1px solid {vc};font-weight:700;font-size:0.9rem">'
+                f'{overall} · Rule Set: <code>{rule_set}</code></div>',
+                unsafe_allow_html=True,
+            )
+            fr = validation_out.get("field_results") or []
+            if fr:
+                st.dataframe(pd.DataFrame(fr), use_container_width=True, hide_index=True)
+                failed = [r for r in fr if str(r.get("status", "")).upper() in {"FAIL", "FAILED", "ERROR"}]
+                if failed:
+                    st.markdown(f'<div class="alert-warn">⚠️ {len(failed)} field(s) failed validation.</div>', unsafe_allow_html=True)
+
+        with lt3:
+            _section("Stamp, Seal & Signature Detection")
+            auth_score = visual_out.get("visual_authenticity_score")
+            if auth_score is not None:
+                _confidence_bar(float(auth_score), "Visual Authenticity")
+            markers = visual_out.get("markers") or []
+            if markers:
+                st.dataframe(pd.DataFrame(markers), use_container_width=True, hide_index=True)
+                for m in markers:
+                    mt = str(m.get("type") or m.get("marker_type") or "MARKER")
+                    present = m.get("present") or m.get("detected")
+                    pos = m.get("position") or m.get("bounding_box")
+                    ic = "✅" if present else "❌"
+                    line = f"{ic} **{mt}**"
+                    if pos:
+                        line += f" · `{pos}`"
+                    st.markdown(line)
+            else:
+                st.caption("No marker data — visual authenticity score only.")
+            forensics = visual_out.get("image_forensics") or {}
+            tamper = forensics.get("tamper_signals", [])
+            if tamper:
+                st.markdown(f'<div class="alert-warn">🔴 {len(tamper)} tamper signal(s).</div>', unsafe_allow_html=True)
+                for t_item in tamper:
+                    st.markdown(f"- ⚠️ {t_item}")
+            else:
+                st.markdown('<div class="alert-success">✅ No tamper signals.</div>', unsafe_allow_html=True)
+
+        with lt4:
+            _section("Explainability")
+            st.caption("AI-generated reasons to help officers understand the verification outcome.")
+            doc_exp = explainability.get("document_explanations", [])
+            field_exp = explainability.get("field_explanations", [])
+            if doc_exp:
+                for i, r in enumerate(doc_exp, 1):
+                    st.markdown(f"{i}. {r}")
+            else:
+                st.caption("No document-level explanations.")
+            if field_exp:
+                _section("Field-Level Reasons")
+                if isinstance(field_exp, list) and field_exp and isinstance(field_exp[0], dict):
+                    st.dataframe(pd.DataFrame(field_exp), use_container_width=True, hide_index=True)
+                else:
+                    st.write(field_exp)
+
+            _section("Citizen-Facing Preview")
+            decision = selected_doc.get("decision") or "PENDING"
+            reasons = "; ".join(str(r) for r in doc_exp[:3]) if doc_exp else "Review in progress."
+            st.text_area(
+                "Plain-language summary",
+                value=f"Status: {decision}. Reason(s): {reasons}",
+                height=65,
+                disabled=True,
+            )
+
+    with right_col:
+        _section("✅ Review Actions")
+        ingestion = dict((selected_doc.get("metadata") or {}).get("ingestion") or {})
+        submitted_by = dict(ingestion.get("submitted_by") or {})
+        st.markdown(f"**Document ID:** `{doc_id}`")
+        st.markdown(f"**Current State:** `{current_state}`")
+        st.markdown(f"**Citizen ID:** `{selected_doc.get('citizen_id', '—')}`")
+        st.markdown(f"**Submitted By:** `{submitted_by.get('actor_id', '—')}`")
+        st.markdown(f"**Received At:** `{ingestion.get('received_at', '—')}`")
+
+        reviewer_notes = st.text_area(
+            "Reviewer Notes",
+            placeholder="Required for Reject and Return to Citizen",
+            height=90,
+            key=f"wb_notes_{doc_id}",
+        )
+
         if not can_review:
             st.markdown('<div class="alert-warn">🔒 Decision actions are disabled for your role.</div>', unsafe_allow_html=True)
         else:
-            _section("Decision")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                if st.button("▶️ Start Review", use_container_width=True, key="wb_start"):
+            start_allowed = current_state in {"WAITING_FOR_REVIEW", "DISPUTED"}
+            decision_allowed = current_state == "REVIEW_IN_PROGRESS"
+
+            if st.button("▶️ Start Review", use_container_width=True, key=f"wb_start_{doc_id}", disabled=not start_allowed):
+                try:
+                    out = service.start_review(doc_id, tenant_id, officer_id, review_level="L1")
+                    st.markdown(f'<div class="alert-success">Review started → <strong>{out.get("state")}</strong></div>', unsafe_allow_html=True)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
+            if st.button("✅ Approve", use_container_width=True, key=f"wb_approve_{doc_id}", disabled=not decision_allowed):
+                try:
+                    out = service.manual_decision(doc_id, "APPROVE", tenant_id, officer_id)
+                    st.markdown(f'<div class="alert-success">✅ {out.get("decision")} · {out.get("state")}</div>', unsafe_allow_html=True)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
+            if st.button("❌ Reject", use_container_width=True, key=f"wb_reject_{doc_id}", disabled=not decision_allowed):
+                if not reviewer_notes.strip():
+                    st.error("Reviewer notes are required for rejection.")
+                else:
                     try:
-                        out = service.start_review(str(selected_doc.get("id")), tenant_id, officer_id, review_level="L1")
-                        st.markdown(f'<div class="alert-success">Review started → <strong>{out.get("state")}</strong></div>', unsafe_allow_html=True)
-                    except Exception as exc:
-                        st.error(str(exc))
-            with c2:
-                if st.button("✅ Approve", use_container_width=True, key="wb_approve"):
-                    try:
-                        out = service.manual_decision(str(selected_doc.get("id")), "APPROVE", tenant_id, officer_id)
-                        st.markdown(f'<div class="alert-success">✅ {out.get("decision")} · {out.get("state")}</div>', unsafe_allow_html=True)
-                    except Exception as exc:
-                        st.error(str(exc))
-            with c3:
-                if st.button("❌ Reject", use_container_width=True, key="wb_reject"):
-                    try:
-                        out = service.manual_decision(str(selected_doc.get("id")), "REJECT", tenant_id, officer_id)
+                        out = service.manual_decision(
+                            doc_id,
+                            "REJECT",
+                            tenant_id,
+                            officer_id,
+                            reason=f"REJECTED:{reviewer_notes.strip()[:120]}",
+                        )
                         st.markdown(f'<div class="alert-warn">❌ {out.get("decision")} · {out.get("state")}</div>', unsafe_allow_html=True)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+
+            if st.button("🚩 Escalate", use_container_width=True, key=f"wb_escalate_{doc_id}"):
+                try:
+                    res = service.flag_internal_disagreement(
+                        document_id=doc_id,
+                        tenant_id=tenant_id,
+                        officer_id=officer_id,
+                        reason=reviewer_notes.strip() or "REVIEW_ESCALATION",
+                    )
+                    st.markdown(
+                        f'<div class="alert-warn">Escalated: <code>{res["escalation"].get("id")}</code></div>',
+                        unsafe_allow_html=True,
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
+
+            if st.button("↩️ Return to Citizen", use_container_width=True, key=f"wb_return_{doc_id}", disabled=not decision_allowed):
+                if not reviewer_notes.strip():
+                    st.error("Reviewer notes are required to return to citizen.")
+                else:
+                    try:
+                        out = service.manual_decision(
+                            doc_id,
+                            "REJECT",
+                            tenant_id,
+                            officer_id,
+                            reason=f"RETURNED_TO_CITIZEN:{reviewer_notes.strip()[:120]}",
+                        )
+                        try:
+                            service.notify(doc_id, tenant_id, officer_id)
+                        except Exception:
+                            pass
+                        st.markdown(
+                            f'<div class="alert-warn">↩️ Returned to citizen · {out.get("state")}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.rerun()
                     except Exception as exc:
                         st.error(str(exc))
 
         _section("Field Correction")
         st.caption("Corrections are logged immutably and feed the ML training pipeline.")
-        with st.form("wb_correction"):
+        with st.form(f"wb_correction_{doc_id}"):
             cc1, cc2 = st.columns(2)
             with cc1:
                 corr_field = st.text_input("Field", value="TOTAL_MARKS")
@@ -1177,15 +1270,19 @@ def _render_review_workbench(
             if st.form_submit_button("📝 Log Correction", use_container_width=True):
                 try:
                     gate = service.record_field_correction(
-                        document_id=str(selected_doc.get("id")), tenant_id=tenant_id,
-                        officer_id=officer_id, field_name=corr_field.strip(),
-                        old_value=corr_old.strip() or None, new_value=corr_new.strip() or None,
+                        document_id=doc_id,
+                        tenant_id=tenant_id,
+                        officer_id=officer_id,
+                        field_name=corr_field.strip(),
+                        old_value=corr_old.strip() or None,
+                        new_value=corr_new.strip() or None,
                         reason=corr_reason.strip() or "FIELD_CORRECTION",
                     )
                     st.markdown(
                         f'<div class="alert-success">✅ Gate: <strong>{gate["gate"].get("status")}</strong> — '
                         f'<span class="diff-old">{corr_old}</span> → <span class="diff-new">{corr_new}</span></div>',
-                        unsafe_allow_html=True)
+                        unsafe_allow_html=True,
+                    )
                 except Exception as exc:
                     st.error(str(exc))
 
