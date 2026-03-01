@@ -2236,68 +2236,72 @@ def _render_auth_gate() -> bool:
             except Exception as exc:
                 st.error(str(exc))
 
-        st.markdown("### Recovery")
-        fp_col, fu_col = st.columns(2)
-        with fp_col:
-            with st.form("auth_forgot_password_form"):
-                fp_email = st.text_input("Forgot password email", value="", placeholder="name@example.com")
-                fp_name = st.text_input("Name (optional)", value="")
-                fp_role = st.selectbox(
-                    "Role",
-                    ALL_ROLES,
-                    format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
-                    key="forgot_password_role",
-                )
-                submit_forgot_password = st.form_submit_button("Send Password Reset", use_container_width=True)
-            if submit_forgot_password:
-                target_email = fp_email.strip()
-                if not target_email:
-                    st.error("Email is required.")
-                else:
-                    reset_ok, reset_detail = _trigger_supabase_password_reset(auth, target_email)
-                    recovery_link = _generate_supabase_recovery_link(auth, target_email)
-                    send_result = email_adapter.send_email(
-                        to_email=target_email,
-                        template_type="forgot",
-                        user_name=_default_user_name(fp_name, target_email),
-                        role=_role_label(fp_role),
-                        user_email=target_email,
-                        reset_link=recovery_link or _password_reset_redirect_default(),
-                    )
-                    if reset_ok:
-                        st.success("Password reset flow triggered. Check your inbox.")
-                    else:
-                        st.warning(f"Supabase reset trigger returned: {reset_detail}")
-                    if not send_result.ok:
-                        st.info(f"Custom email not sent: {send_result.detail}")
+        with st.expander("Need help signing in?", expanded=False):
+            recovery_action = st.selectbox(
+                "Recovery action",
+                ["Select", "Forgot Password", "Forgot Username"],
+                index=0,
+                key="auth_recovery_action",
+            )
 
-        with fu_col:
-            with st.form("auth_forgot_username_form"):
-                fu_email = st.text_input("Forgot username email", value="", placeholder="name@example.com")
-                fu_name = st.text_input("Name (optional)", value="", key="forgot_username_name")
-                fu_role = st.selectbox(
-                    "Role",
-                    ALL_ROLES,
-                    format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
-                    key="forgot_username_role",
-                )
-                submit_forgot_username = st.form_submit_button("Send Username Reminder", use_container_width=True)
-            if submit_forgot_username:
-                target_email = fu_email.strip()
-                if not target_email:
-                    st.error("Email is required.")
-                else:
-                    send_result = email_adapter.send_email(
-                        to_email=target_email,
-                        template_type="username",
-                        user_name=_default_user_name(fu_name, target_email),
-                        role=_role_label(fu_role),
-                        user_email=target_email,
+            if recovery_action == "Forgot Password":
+                with st.form("auth_forgot_password_form"):
+                    fp_email = st.text_input("Email", value="", placeholder="name@example.com")
+                    fp_name = st.text_input("Name (optional)", value="")
+                    fp_role = st.selectbox(
+                        "Role",
+                        ALL_ROLES,
+                        format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
+                        key="forgot_password_role",
                     )
-                    if send_result.ok:
-                        st.success("Username reminder sent.")
+                    submit_forgot_password = st.form_submit_button("Send Password Reset", use_container_width=True)
+                if submit_forgot_password:
+                    target_email = fp_email.strip()
+                    if not target_email:
+                        st.error("Email is required.")
                     else:
-                        st.error(f"Username reminder failed: {send_result.detail}")
+                        reset_ok, reset_detail = _trigger_supabase_password_reset(auth, target_email)
+                        recovery_link = _generate_supabase_recovery_link(auth, target_email)
+                        send_result = email_adapter.send_email(
+                            to_email=target_email,
+                            template_type="forgot",
+                            user_name=_default_user_name(fp_name, target_email),
+                            role=_role_label(fp_role),
+                            user_email=target_email,
+                            reset_link=recovery_link or _password_reset_redirect_default(),
+                        )
+                        st.success("If the account exists, password reset instructions were sent.")
+                        if not reset_ok:
+                            st.info(f"Reset trigger detail: {reset_detail}")
+                        if not send_result.ok:
+                            st.info(f"Custom email sender: {send_result.detail}")
+
+            elif recovery_action == "Forgot Username":
+                with st.form("auth_forgot_username_form"):
+                    fu_email = st.text_input("Email", value="", placeholder="name@example.com")
+                    fu_name = st.text_input("Name (optional)", value="", key="forgot_username_name")
+                    fu_role = st.selectbox(
+                        "Role",
+                        ALL_ROLES,
+                        format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
+                        key="forgot_username_role",
+                    )
+                    submit_forgot_username = st.form_submit_button("Send Username Reminder", use_container_width=True)
+                if submit_forgot_username:
+                    target_email = fu_email.strip()
+                    if not target_email:
+                        st.error("Email is required.")
+                    else:
+                        send_result = email_adapter.send_email(
+                            to_email=target_email,
+                            template_type="username",
+                            user_name=_default_user_name(fu_name, target_email),
+                            role=_role_label(fu_role),
+                            user_email=target_email,
+                        )
+                        st.success("If the account exists, username reminder was sent.")
+                        if not send_result.ok:
+                            st.info(f"Custom email sender: {send_result.detail}")
 
     with sign_up_tab:
         with st.form("auth_sign_up_form"):

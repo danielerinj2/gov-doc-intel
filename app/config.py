@@ -35,20 +35,34 @@ def _get_streamlit_secret(*keys: str) -> str:
     except Exception:
         pass
 
-    # Common nested section: [supabase]
-    try:
-        supabase_section = st.secrets.get("supabase")
-    except Exception:
-        supabase_section = None
-
-    if isinstance(supabase_section, dict):
-        nested = {str(k).lower(): _to_secret_str(v) for k, v in supabase_section.items()}
-        alias_map = {
+    section_aliases = {
+        "supabase": {
             "supabase_url": ["url", "supabase_url"],
             "supabase_service_key": ["service_key", "service_role_key", "supabase_service_key"],
             "supabase_key": ["key", "anon_key", "supabase_key", "supabase_anon_key"],
             "supabase_anon_key": ["anon_key", "key", "supabase_anon_key", "supabase_key"],
-        }
+        },
+        "sendgrid": {
+            "sendgrid_api_key": ["api_key", "sendgrid_api_key", "sendgrid_key"],
+            "sendgrid_key": ["api_key", "sendgrid_api_key", "sendgrid_key"],
+            "send_grid_api_key": ["api_key", "sendgrid_api_key", "sendgrid_key"],
+            "sendgrid_from_email": ["from_email", "sender", "sendgrid_from_email"],
+            "email_from": ["from_email", "sender", "sendgrid_from_email"],
+        },
+        "app": {
+            "app_login_url": ["login_url", "app_login_url"],
+            "supabase_password_reset_redirect_url": ["password_reset_redirect_url", "supabase_password_reset_redirect_url"],
+        },
+    }
+
+    for section_name, alias_map in section_aliases.items():
+        try:
+            section_data = st.secrets.get(section_name)
+        except Exception:
+            section_data = None
+        if not isinstance(section_data, dict):
+            continue
+        nested = {str(k).lower(): _to_secret_str(v) for k, v in section_data.items()}
         for key in keys:
             for alias in alias_map.get(key.lower(), []):
                 value = nested.get(alias.lower(), "")
@@ -74,6 +88,24 @@ def _pick_supabase_key() -> str:
         _get_config_value("SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY")
         or _get_config_value("SUPABASE_KEY")
         or _get_config_value("SUPABASE_ANON_KEY")
+    )
+
+
+def _pick_sendgrid_api_key() -> str:
+    return _get_config_value(
+        "SENDGRID_API_KEY",
+        "SENDGRID_KEY",
+        "SEND_GRID_API_KEY",
+        "SENDGRID_APIKEY",
+    )
+
+
+def _pick_sendgrid_from_email() -> str:
+    return _get_config_value(
+        "SENDGRID_FROM_EMAIL",
+        "EMAIL_FROM",
+        "FROM_EMAIL",
+        "SENDGRID_SENDER",
     )
 
 
@@ -134,8 +166,8 @@ def load_settings() -> Settings:
         ),
         supabase_url=_get_config_value("SUPABASE_URL").rstrip("/"),
         supabase_key=_pick_supabase_key(),
-        sendgrid_api_key=_get_config_value("SENDGRID_API_KEY"),
-        sendgrid_from_email=_get_config_value("SENDGRID_FROM_EMAIL", "EMAIL_FROM"),
+        sendgrid_api_key=_pick_sendgrid_api_key(),
+        sendgrid_from_email=_pick_sendgrid_from_email(),
         groq_api_key=_get_config_value("GROQ_API_KEY"),
         groq_model=_get_config_value("GROQ_MODEL", default="llama-3.1-70b-versatile"),
         groq_user_agent=_get_config_value(

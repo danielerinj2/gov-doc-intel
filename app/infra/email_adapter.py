@@ -158,6 +158,11 @@ class GovDocIQEmailAdapter:
                 detail = exc.read().decode("utf-8", errors="ignore")
             except Exception:
                 detail = str(exc)
+            detail_lc = detail.lower()
+            if exc.code == 401:
+                return EmailSendResult(ok=False, detail="invalid sendgrid api key")
+            if exc.code == 403 and "from" in detail_lc:
+                return EmailSendResult(ok=False, detail="sendgrid sender email not verified")
             return EmailSendResult(ok=False, detail=f"http_error:{exc.code}:{detail}")
         except URLError as exc:
             return EmailSendResult(ok=False, detail=f"url_error:{exc}")
