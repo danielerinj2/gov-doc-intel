@@ -21,9 +21,10 @@ def _safe_name(value: str | None, fallback: str = "User") -> str:
 
 class GovDocIQEmailAdapter:
     def __init__(self) -> None:
-        self.api_key = settings.sendgrid_api_key
-        self.from_email = settings.sendgrid_from_email
-        self.login_url = settings.app_login_url
+        # Backward-compatible: do not crash if an older settings object is loaded.
+        self.api_key = str(getattr(settings, "sendgrid_api_key", "") or "").strip()
+        self.from_email = str(getattr(settings, "sendgrid_from_email", "") or "").strip()
+        self.login_url = str(getattr(settings, "app_login_url", "") or "").strip() or "https://govdociq.streamlit.app"
 
     def _build_subject(self, template_type: str, role: str) -> str:
         subjects = {

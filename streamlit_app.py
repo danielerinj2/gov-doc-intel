@@ -2062,6 +2062,19 @@ AUTH_USER_ID_KEY = "auth_user_id"
 AUTH_EMAIL_KEY = "auth_email"
 
 
+def _settings_value(name: str, default: str = "") -> str:
+    return str(getattr(settings, name, "") or "").strip() or default
+
+
+def _workspace_id_default() -> str:
+    return _settings_value("default_workspace_id", "workspace-default")
+
+
+def _password_reset_redirect_default() -> str:
+    login_url = _settings_value("app_login_url", "https://govdociq.streamlit.app")
+    return _settings_value("password_reset_redirect_url", login_url)
+
+
 def _auth_client() -> tuple[Any | None, str | None]:
     client = service.repo.client
     if client is not None:
@@ -2140,7 +2153,7 @@ def _generate_supabase_recovery_link(auth: Any, email: str) -> str | None:
         payload = {
             "type": "recovery",
             "email": email,
-            "options": {"redirect_to": settings.password_reset_redirect_url},
+            "options": {"redirect_to": _password_reset_redirect_default()},
         }
         if hasattr(admin, "generate_link"):
             response = admin.generate_link(payload)
@@ -2153,7 +2166,7 @@ def _generate_supabase_recovery_link(auth: Any, email: str) -> str | None:
 def _trigger_supabase_password_reset(auth: Any, email: str) -> tuple[bool, str]:
     if not email.strip():
         return False, "email missing"
-    redirect_to = settings.password_reset_redirect_url
+    redirect_to = _password_reset_redirect_default()
     errors: list[str] = []
 
     calls = [
@@ -2249,7 +2262,7 @@ def _render_auth_gate() -> bool:
                         user_name=_default_user_name(fp_name, target_email),
                         role=_role_label(fp_role),
                         user_email=target_email,
-                        reset_link=recovery_link or settings.password_reset_redirect_url,
+                        reset_link=recovery_link or _password_reset_redirect_default(),
                     )
                     if reset_ok:
                         st.success("Password reset flow triggered. Check your inbox.")
@@ -2300,7 +2313,7 @@ def _render_auth_gate() -> bool:
             submit_sign_up = st.form_submit_button("Create Account", use_container_width=True)
 
         if submit_sign_up:
-            workspace_id = settings.default_workspace_id.strip()
+            workspace_id = _workspace_id_default()
             if pwd_su != pwd_confirm:
                 st.error("Passwords do not match.")
             elif len(pwd_su) < 8:
@@ -2359,7 +2372,7 @@ def _resolve_access_context() -> tuple[str, str, str] | None:
 
     st.warning("Your account is authenticated but not yet linked to an access profile.")
     with st.form("complete_profile_form"):
-        workspace_id = settings.default_workspace_id.strip()
+        workspace_id = _workspace_id_default()
         role = st.selectbox(
             "Role",
             ALL_ROLES,
