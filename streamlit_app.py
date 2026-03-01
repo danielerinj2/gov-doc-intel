@@ -530,7 +530,6 @@ def _hero_banner(role: str, tenant_id: str, officer_id: str) -> None:
         f'<div class="hero-banner">'
         f'<h1>🏛️ GovDocIQ</h1>'
         f'<p class="hero-sub">{dot} AI-Powered Document Verification Platform &nbsp;·&nbsp; '
-        f'Department: <strong>{tenant_id}</strong> &nbsp;·&nbsp; '
         f'Officer: <strong>{officer_id}</strong></p>'
         f'<span class="hero-role" style="background:{meta["color"]}22;'
         f'border:1px solid {meta["color"]};color:{meta["color"]}">'
@@ -880,7 +879,7 @@ def _render_intake_processing(
                 if scheme_context.strip():
                     metadata["submission_context"] = {
                         "scheme": scheme_context.strip(),
-                        "department": tenant_id,
+                        "workspace": tenant_id,
                     }
 
                 file_name = uploaded.name
@@ -2110,7 +2109,7 @@ def _render_auth_gate() -> bool:
         return True
 
     st.title("🔐 GovDocIQ Access")
-    st.caption("Sign in to access your department workspace.")
+    st.caption("Sign in to access your workspace.")
 
     auth, auth_error = _auth_client()
     if auth is None:
@@ -2127,7 +2126,7 @@ def _render_auth_gate() -> bool:
 
     with sign_in_tab:
         with st.form("auth_sign_in_form"):
-            email = st.text_input("Email", value="", placeholder="name@department.gov")
+            email = st.text_input("Email", value="", placeholder="name@example.com")
             password = st.text_input("Password", type="password")
             submit_sign_in = st.form_submit_button("Sign In", use_container_width=True)
         if submit_sign_in:
@@ -2146,7 +2145,7 @@ def _render_auth_gate() -> bool:
 
     with sign_up_tab:
         with st.form("auth_sign_up_form"):
-            email_su = st.text_input("Email", value="", placeholder="name@department.gov")
+            email_su = st.text_input("Email", value="", placeholder="name@example.com")
             pwd_su = st.text_input("Password", type="password")
             pwd_confirm = st.text_input("Confirm Password", type="password")
             role_su = st.selectbox(
@@ -2154,17 +2153,16 @@ def _render_auth_gate() -> bool:
                 ALL_ROLES,
                 format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
             )
-            st.caption(f"Department: `{settings.default_department_id}`")
             submit_sign_up = st.form_submit_button("Create Account", use_container_width=True)
 
         if submit_sign_up:
-            dept_id = settings.default_department_id.strip()
+            workspace_id = settings.default_workspace_id.strip()
             if pwd_su != pwd_confirm:
                 st.error("Passwords do not match.")
             elif len(pwd_su) < 8:
                 st.error("Password must be at least 8 characters.")
-            elif not dept_id:
-                st.error("Department ID is required.")
+            elif not workspace_id:
+                st.error("Workspace is not configured.")
             else:
                 try:
                     response = auth.sign_up(
@@ -2178,13 +2176,13 @@ def _render_auth_gate() -> bool:
                     else:
                         service.register_officer(
                             officer_id=user_id,
-                            tenant_id=dept_id,
+                            tenant_id=workspace_id,
                             role=role_su,
-                            display_name=dept_id,
+                            display_name=workspace_id,
                         )
                         service.repo.upsert_tenant_membership(
                             user_id=user_id,
-                            tenant_id=dept_id,
+                            tenant_id=workspace_id,
                             role=role_su,
                             status="ACTIVE",
                         )
@@ -2206,10 +2204,9 @@ def _resolve_access_context() -> tuple[str, str, str] | None:
     if profile and str(profile.get("status", "ACTIVE")).upper() == "ACTIVE":
         return str(profile.get("tenant_id")), str(profile.get("role")), officer_id
 
-    st.warning("Your account is authenticated but not yet linked to a department profile.")
+    st.warning("Your account is authenticated but not yet linked to an access profile.")
     with st.form("complete_profile_form"):
-        dept_id = settings.default_department_id.strip()
-        st.caption(f"Department: `{dept_id}`")
+        workspace_id = settings.default_workspace_id.strip()
         role = st.selectbox(
             "Role",
             ALL_ROLES,
@@ -2218,19 +2215,19 @@ def _resolve_access_context() -> tuple[str, str, str] | None:
         )
         submit_profile = st.form_submit_button("Complete Profile", use_container_width=True)
     if submit_profile:
-        if not dept_id.strip():
-            st.error("Department ID is required.")
+        if not workspace_id:
+            st.error("Workspace is not configured.")
         else:
             try:
                 service.register_officer(
                     officer_id=officer_id,
-                    tenant_id=dept_id,
+                    tenant_id=workspace_id,
                     role=role,
-                    display_name=dept_id,
+                    display_name=workspace_id,
                 )
                 service.repo.upsert_tenant_membership(
                     user_id=officer_id,
-                    tenant_id=dept_id,
+                    tenant_id=workspace_id,
                     role=role,
                     status="ACTIVE",
                 )
@@ -2262,7 +2259,6 @@ def main() -> None:
         )
         if st.session_state.get(AUTH_EMAIL_KEY):
             st.caption(f"Signed in as `{st.session_state[AUTH_EMAIL_KEY]}`")
-        st.caption(f"Department: `{tenant_id}`")
         st.caption(f"Officer ID: `{officer_id}`")
 
         if st.button("🚪 Sign Out", use_container_width=True):
@@ -2382,7 +2378,7 @@ def main() -> None:
         _render_ml_training(role=role, tenant_id=tenant_id, officer_id=officer_id)
 
     st.divider()
-    st.caption("Department-scoped · Role-gated · Auditable · Explainable AI")
+    st.caption("Role-gated · Auditable · Explainable AI")
 
 
 if __name__ == "__main__":
