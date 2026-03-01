@@ -1,0 +1,456 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import streamlit as st
+
+from app.config import settings
+from app.infra.repositories import (
+    ROLE_AUDITOR,
+    ROLE_PLATFORM_ADMIN,
+    ROLE_SENIOR_VERIFIER,
+    ROLE_VERIFIER,
+)
+from app.services.auth_service import AuthService
+from app.services.document_service import DocumentService
+
+st.set_page_config(page_title="GovDocIQ", page_icon="🏛️", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    .stApp { background: #f4f7fb; }
+    section[data-testid="stSidebar"] {
+        background: #ffffff;
+        border-right: 1px solid #e6edf7;
+    }
+    section[data-testid="stSidebar"] * { color: #132341 !important; }
+    .kpi {
+        background:#ffffff;
+        border:1px solid #e1e8f3;
+        border-radius:10px;
+        padding:0.8rem 1rem;
+    }
+    .kpi .v { font-size:1.5rem; font-weight:700; color:#0f4dbd; }
+    .kpi .l { font-size:0.75rem; color:#4c6186; text-transform:uppercase; }
+    .card {
+        background:#ffffff;
+        border:1px solid #e1e8f3;
+        border-radius:10px;
+        padding:0.8rem 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+ALL_ROLES = [ROLE_VERIFIER, ROLE_SENIOR_VERIFIER, ROLE_AUDITOR, ROLE_PLATFORM_ADMIN]
+ROLE_META = {
+    ROLE_VERIFIER: {"icon": "🧑‍💼", "label": "Verifier", "color": "#4fc3f7"},
+    ROLE_SENIOR_VERIFIER: {"icon": "🎖️", "label": "Senior Verifier", "color": "#ffb74d"},
+    ROLE_AUDITOR: {"icon": "🔎", "label": "Auditor", "color": "#80deea"},
+    ROLE_PLATFORM_ADMIN: {"icon": "👑", "label": "Platform Admin", "color": "#ffcc02"},
+}
+
+PAGES = [
+    "🏠 Dashboard",
+    "📥 Intake & Processing",
+    "🔍 Review Workbench",
+    "📋 Audit Logs",
+    "⚙️ System Status",
+]
+
+SCRIPT_OPTIONS = [
+    "AUTO-DETECT",
+    "Devanagari (Hindi/Marathi/Sanskrit)",
+    "Bengali",
+    "Tamil",
+    "Telugu",
+    "Kannada",
+    "Malayalam",
+    "Gujarati",
+    "Gurmukhi (Punjabi)",
+    "Odia",
+    "Urdu (Nastaliq)",
+    "Latin (English)",
+]
+
+DOC_TYPE_HINTS = ["AUTO-DETECT", "AADHAAR_CARD", "PAN_CARD", "INCOME_CERTIFICATE"]
+
+
+@st.cache_resource
+def get_service() -> DocumentService:
+    return DocumentService()
+
+
+@st.cache_resource
+def get_auth_service() -> AuthService:
+    return AuthService()
+
+
+def _kpi(label: str, value: Any) -> str:
+    return f'<div class="kpi"><div class="v">{value}</div><div class="l">{label}</div></div>'
+
+
+def _doc_summary_row(doc: dict[str, Any]) -> dict[str, Any]:
+    cls = doc.get("classification_output") or {}
+    return {
+        "id": doc.get("id"),
+        "citizen_id": doc.get("citizen_id"),
+        "file_name": doc.get("file_name"),
+        "doc_type": cls.get("doc_type"),
+        "state": doc.get("state"),
+        "decision": doc.get("decision") or "PENDING",
+        "confidence": doc.get("confidence"),
+        "risk_score": doc.get("risk_score"),
+        "updated_at": doc.get("updated_at"),
+    }
+
+
+def _init_session() -> None:
+    st.session_state.setdefault("auth_user", None)
+    st.session_state.setdefault("active_profile", ROLE_VERIFIER)
+
+
+def _render_auth_page(auth_service: AuthService) -> None:
+    st.title("GovDocIQ Access")
+    st.caption("Sign in to access your workspace.")
+
+    if not auth_service.configured():
+        st.error("Supabase authentication is not available. Configure SUPABASE_URL and SUPABASE_KEY/ANON key.")
+
+    t1, t2 = st.tabs(["Sign In", "Sign Up"])
+
+    with t1:
+        email = st.text_input("Email", key="signin_email")
+        password = st.text_input("Password", type="password", key="signin_password")
+
+        if st.button("Sign In", use_container_width=True, key="signin_btn"):
+            out = auth_service.sign_in(email=email.strip(), password=password)
+            if out.ok and out.data:
+                st.session_state["auth_user"] = out.data
+                default_role = str(out.data.get("role") or ROLE_VERIFIER)
+                st.session_state["active_profile"] = default_role if default_role in ALL_ROLES else ROLE_VERIFIER
+                st.rerun()
+            else:
+                st.error(out.message)
+
+        st.markdown("---")
+        recovery_action = st.selectbox(
+            "Recovery",
+            ["None", "Forgot password", "Forgot username"],
+            index=0,
+            key="recovery_action",
+        )
+        recovery_email = st.text_input("Recovery email", key="recovery_email")
+
+        if recovery_action == "Forgot password":
+            if st.button("Send password reset", use_container_width=True, key="send_pw_reset"):
+                out = auth_service.send_password_reset(email=recovery_email.strip() or email.strip())
+                if out.ok:
+                    st.success(out.message)
+                else:
+                    st.error(out.message)
+
+        if recovery_action == "Forgot username":
+            if st.button("Send username reminder", use_container_width=True, key="send_user_rem"):
+                out = auth_service.send_username_reminder(email=recovery_email.strip() or email.strip())
+                if out.ok:
+                    st.success(out.message)
+                else:
+                    st.error(out.message)
+
+    with t2:
+        su_name = st.text_input("Name", key="signup_name")
+        su_email = st.text_input("Email", key="signup_email")
+        su_password = st.text_input("Password", type="password", key="signup_password")
+        su_confirm = st.text_input("Confirm Password", type="password", key="signup_confirm")
+        su_role = st.selectbox("Role", ALL_ROLES, index=0, key="signup_role")
+
+        if st.button("Sign Up", use_container_width=True, key="signup_btn"):
+            if not su_name.strip():
+                st.error("Name is required.")
+            elif su_password != su_confirm:
+                st.error("Password and Confirm Password do not match.")
+            else:
+                out = auth_service.sign_up(
+                    name=su_name.strip(),
+                    email=su_email.strip(),
+                    password=su_password,
+                    role=su_role,
+                )
+                if out.ok:
+                    st.success(out.message)
+                else:
+                    st.error(out.message)
+
+
+def _render_dashboard(service: DocumentService, role: str) -> None:
+    docs = service.list_documents(limit=1000)
+    waiting = [d for d in docs if str(d.get("state")) in {"WAITING_FOR_REVIEW", "REVIEW_IN_PROGRESS"}]
+    approved = [d for d in docs if str(d.get("decision")) == "APPROVE"]
+    rejected = [d for d in docs if str(d.get("decision")) == "REJECT"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(_kpi("Total Documents", len(docs)), unsafe_allow_html=True)
+    c2.markdown(_kpi("Review Queue", len(waiting)), unsafe_allow_html=True)
+    c3.markdown(_kpi("Approved", len(approved)), unsafe_allow_html=True)
+    c4.markdown(_kpi("Rejected", len(rejected)), unsafe_allow_html=True)
+
+    st.markdown("### Profiles")
+    prof_cols = st.columns(len(ALL_ROLES))
+    for col, r in zip(prof_cols, ALL_ROLES):
+        meta = ROLE_META[r]
+        with col:
+            st.markdown(
+                (
+                    '<div class="card">'
+                    f"<div style='font-size:1.4rem'>{meta['icon']}</div>"
+                    f"<div style='font-weight:700'>{meta['label']}</div>"
+                    f"<div style='font-size:0.8rem;color:#4c6186'>{'Current session' if r == role else 'Available profile'}</div>"
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("### Recent Documents")
+    if docs:
+        df = pd.DataFrame([_doc_summary_row(d) for d in docs])
+        st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+        counts = df["state"].fillna("UNKNOWN").value_counts().rename_axis("state").reset_index(name="count")
+        st.bar_chart(counts.set_index("state"))
+    else:
+        st.info("No documents yet. Use Intake & Processing to submit one.")
+
+
+def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> None:
+    st.markdown("### Upload & Process")
+
+    uploaded = st.file_uploader("Upload document", type=["pdf", "jpg", "jpeg", "png", "txt", "csv", "json"])
+    c1, c2 = st.columns(2)
+    with c1:
+        script_hint = st.selectbox("Script hint", SCRIPT_OPTIONS, index=0)
+    with c2:
+        doc_type_hint = st.selectbox("Document type hint", DOC_TYPE_HINTS, index=0)
+
+    citizen_id = st.text_input("Citizen ID", value="citizen-001")
+    notes = st.text_area("Operator notes", height=80)
+
+    if uploaded:
+        suffix = Path(uploaded.name).suffix.lower()
+        if suffix in {".jpg", ".jpeg", ".png"}:
+            st.image(uploaded, caption=uploaded.name, use_container_width=True)
+        elif suffix in {".txt", ".csv", ".json"}:
+            st.code(uploaded.getvalue().decode("utf-8", errors="ignore")[:2000])
+
+    if st.button("Submit & Process", use_container_width=True, disabled=uploaded is None):
+        if not uploaded:
+            st.error("Upload a file first.")
+        elif not citizen_id.strip():
+            st.error("Citizen ID is required.")
+        else:
+            try:
+                created = service.create_document(
+                    citizen_id=citizen_id.strip(),
+                    file_name=uploaded.name,
+                    file_bytes=uploaded.getvalue(),
+                    actor_id=actor_id,
+                    role=role,
+                    source="ONLINE_PORTAL",
+                    script_hint=script_hint,
+                    doc_type_hint=doc_type_hint,
+                    notes=notes.strip() or None,
+                )
+                processed = service.process_document(str(created["id"]), actor_id=actor_id, role=role)
+                st.success(
+                    f"Processed {processed['id']} | state={processed.get('state')} | "
+                    f"doc_type={(processed.get('classification_output') or {}).get('doc_type')}"
+                )
+            except Exception as exc:
+                st.error(str(exc))
+
+    st.markdown("### Queue")
+    docs = service.list_documents(limit=500)
+    if docs:
+        st.dataframe(pd.DataFrame([_doc_summary_row(d) for d in docs]), use_container_width=True, hide_index=True)
+    else:
+        st.info("No documents in queue.")
+
+
+def _build_doc_label(doc: dict[str, Any]) -> str:
+    return f"{doc.get('id')} | {doc.get('citizen_id')} | {doc.get('file_name')} | {doc.get('state')}"
+
+
+def _render_review(service: DocumentService, actor_id: str, role: str) -> None:
+    docs = service.list_documents(limit=500)
+    review_docs = [d for d in docs if str(d.get("state")) in {"WAITING_FOR_REVIEW", "REVIEW_IN_PROGRESS", "APPROVED", "REJECTED"}]
+
+    if not review_docs:
+        st.info("No reviewable documents yet. Submit and process a document first.")
+        return
+
+    labels = {_build_doc_label(d): d for d in review_docs}
+    selected_label = st.selectbox("Select document", options=list(labels.keys()), key="review_doc_select")
+    selected_doc = labels[selected_label]
+    doc_id = str(selected_doc.get("id"))
+
+    left, right = st.columns([2, 1])
+    with left:
+        st.markdown("### Evidence")
+        file_path = str(selected_doc.get("file_path") or "")
+        if file_path and Path(file_path).exists() and Path(file_path).suffix.lower() in {".png", ".jpg", ".jpeg"}:
+            st.image(file_path, caption=selected_doc.get("file_name") or "uploaded", use_container_width=True)
+        st.text_area("OCR Text", value=str(selected_doc.get("ocr_text") or selected_doc.get("raw_text") or ""), height=220)
+
+        cls = selected_doc.get("classification_output") or {}
+        val = selected_doc.get("validation_output") or {}
+        frd = selected_doc.get("fraud_output") or {}
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Doc Type", cls.get("doc_type", "UNKNOWN"))
+        c2.metric("Confidence", f"{float(selected_doc.get('confidence') or 0.0):.2f}")
+        c3.metric("Risk", f"{float(selected_doc.get('risk_score') or 0.0):.2f}")
+
+        st.write(
+            {
+                "validation_status": val.get("overall_status", "UNKNOWN"),
+                "failed_fields": val.get("failed_count", 0),
+                "risk_level": frd.get("risk_level", "UNKNOWN"),
+                "stamp_present": frd.get("stamp_present"),
+                "signature_present": frd.get("signature_present"),
+            }
+        )
+
+        fields = (selected_doc.get("extraction_output") or {}).get("fields") or [{"field_name": "", "normalized_value": "", "confidence": 0.0}]
+        edited = st.data_editor(pd.DataFrame(fields), use_container_width=True, num_rows="dynamic", key=f"edit_fields_{doc_id}")
+        if st.button("Save Field Corrections", use_container_width=True, key=f"save_fields_{doc_id}"):
+            payload = edited.fillna("").to_dict(orient="records")
+            payload = [r for r in payload if str(r.get("field_name", "")).strip()]
+            try:
+                out = service.update_extracted_fields(doc_id, actor_id=actor_id, role=role, fields=payload)
+                st.success(f"Fields saved. State: {out.get('state')}")
+            except Exception as exc:
+                st.error(str(exc))
+
+    with right:
+        st.markdown("### Decision")
+        st.write(
+            {
+                "document_id": doc_id,
+                "state": selected_doc.get("state"),
+                "decision": selected_doc.get("decision") or "PENDING",
+                "citizen_id": selected_doc.get("citizen_id"),
+            }
+        )
+        notes = st.text_area("Reviewer notes", height=120, key=f"review_notes_{doc_id}")
+
+        if st.button("Re-run Processing", use_container_width=True, key=f"rerun_{doc_id}"):
+            try:
+                out = service.process_document(doc_id, actor_id=actor_id, role=role)
+                st.success(f"Reprocessed. State: {out.get('state')}")
+            except Exception as exc:
+                st.error(str(exc))
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Approve", use_container_width=True, key=f"approve_{doc_id}"):
+                try:
+                    out = service.decide_document(doc_id, actor_id=actor_id, role=role, decision="APPROVE", notes=notes.strip() or None)
+                    st.success(f"Decision: {out.get('decision')}")
+                except Exception as exc:
+                    st.error(str(exc))
+        with c2:
+            if st.button("Reject", use_container_width=True, key=f"reject_{doc_id}"):
+                try:
+                    out = service.decide_document(doc_id, actor_id=actor_id, role=role, decision="REJECT", notes=notes.strip() or None)
+                    st.warning(f"Decision: {out.get('decision')}")
+                except Exception as exc:
+                    st.error(str(exc))
+
+
+def _render_audit(service: DocumentService) -> None:
+    docs = service.list_documents(limit=500)
+    scope = st.selectbox("Audit scope", ["ALL"] + [str(d.get("id")) for d in docs], index=0)
+    doc_id = None if scope == "ALL" else scope
+
+    events = service.list_audit_events(document_id=doc_id, limit=1000)
+    st.markdown("### Audit Events")
+    if events:
+        st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
+    else:
+        st.info("No audit events yet.")
+
+    reviews = service.list_reviews(document_id=doc_id)
+    st.markdown("### Review Decisions")
+    if reviews:
+        st.dataframe(pd.DataFrame(reviews), use_container_width=True, hide_index=True)
+    else:
+        st.info("No review decisions yet.")
+
+
+def _render_system(service: DocumentService, auth_service: AuthService) -> None:
+    st.markdown("### Runtime Status")
+    st.write(
+        {
+            "APP_ENV": settings.app_env,
+            "OCR_BACKEND": settings.ocr_backend,
+            "SUPABASE_URL_VALID": settings.supabase_url_valid(),
+            "SUPABASE_KEY_PRESENT": settings.supabase_key_present(),
+            "AUTH_CONFIGURED": auth_service.configured(),
+            "SENDGRID_CONFIGURED": auth_service.email_adapter.configured(),
+            "PERSISTENCE": "Supabase" if service.using_supabase else "In-memory",
+            "PERSISTENCE_NOTE": service.repo_error,
+        }
+    )
+
+
+def main() -> None:
+    _init_session()
+    service = get_service()
+    auth_service = get_auth_service()
+
+    user = st.session_state.get("auth_user")
+    if not user:
+        _render_auth_page(auth_service)
+        return
+
+    with st.sidebar:
+        st.markdown("## GovDocIQ")
+        st.caption("Document Intelligence Platform")
+
+        user_name = str(user.get("name") or "User")
+        user_email = str(user.get("email") or "")
+        st.write({"name": user_name, "email": user_email})
+
+        role_idx = ALL_ROLES.index(st.session_state.get("active_profile", ROLE_VERIFIER)) if st.session_state.get("active_profile", ROLE_VERIFIER) in ALL_ROLES else 0
+        active_profile = st.selectbox("Profile", ALL_ROLES, index=role_idx)
+        st.session_state["active_profile"] = active_profile
+
+        actor_id = str(user.get("user_id") or user_email or "user-001")
+        page = st.radio("Navigation", PAGES, index=0)
+
+        if st.button("Sign out", use_container_width=True):
+            st.session_state["auth_user"] = None
+            st.session_state["active_profile"] = ROLE_VERIFIER
+            st.rerun()
+
+    meta = ROLE_META.get(active_profile, {"icon": "👤", "label": active_profile})
+    st.markdown(f"# {meta['icon']} GovDocIQ Workspace")
+    st.caption(f"Active profile: {meta['label']} · User: {user_name}")
+
+    if page == "🏠 Dashboard":
+        _render_dashboard(service=service, role=active_profile)
+    elif page == "📥 Intake & Processing":
+        _render_ingestion(service=service, actor_id=actor_id, role=active_profile)
+    elif page == "🔍 Review Workbench":
+        _render_review(service=service, actor_id=actor_id, role=active_profile)
+    elif page == "📋 Audit Logs":
+        _render_audit(service=service)
+    elif page == "⚙️ System Status":
+        _render_system(service=service, auth_service=auth_service)
+
+
+if __name__ == "__main__":
+    main()
