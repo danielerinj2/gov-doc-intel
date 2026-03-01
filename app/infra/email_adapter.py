@@ -31,6 +31,7 @@ class GovDocIQEmailAdapter:
             "signup": f"Welcome to GovDocIQ Access! Your {role} Account is Active",
             "forgot": f"GovDocIQ Access Password Reset - {role}",
             "username": f"GovDocIQ Access Username Reminder - {role}",
+            "signin": f"GovDocIQ Access Sign-In Alert - {role}",
         }
         return subjects.get(template_type, f"GovDocIQ Access Notification - {role}")
 
@@ -73,6 +74,16 @@ class GovDocIQEmailAdapter:
                 f"Username: {user_email or '-'}\n"
                 f"Your Role: {role}\n"
                 f"Login: {self.login_url}\n\n"
+                "Best,\n"
+                "GovDocIQ Access Team"
+            )
+        if template_type == "signin":
+            return (
+                f"Hi {user_name},\n\n"
+                "A sign-in was detected on your GovDocIQ Access account.\n\n"
+                f"Email: {user_email or '-'}\n"
+                f"Login: {self.login_url}\n\n"
+                "If this was not you, reset your password immediately.\n\n"
                 "Best,\n"
                 "GovDocIQ Access Team"
             )

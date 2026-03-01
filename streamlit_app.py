@@ -2126,6 +2126,19 @@ def _auth_client() -> tuple[Any | None, str | None]:
     return getattr(fallback_client, "auth", None), fallback_error
 
 
+def _admin_auth_client() -> tuple[Any | None, str | None]:
+    service_key = str(getattr(settings, "supabase_service_key", "") or "").strip()
+    if not service_key:
+        return None, "SUPABASE_SERVICE_KEY missing"
+    client, err = get_supabase_client_for_key(service_key)
+    if client is None:
+        return None, err or "Failed to initialize Supabase admin client"
+    admin_auth = getattr(client, "auth", None)
+    if admin_auth is None:
+        return None, "Supabase admin auth unavailable"
+    return admin_auth, None
+
+
 def _friendly_auth_error(exc: Exception) -> str:
     msg = str(exc)
     msg_lc = msg.lower()
@@ -2273,8 +2286,11 @@ def _extract_reset_link(value: Any) -> str | None:
 
 
 def _generate_supabase_recovery_link(auth: Any, email: str) -> str | None:
+    admin_auth, _ = _admin_auth_client()
+    if admin_auth is None:
+        return None
     try:
-        admin = getattr(auth, "admin", None)
+        admin = getattr(admin_auth, "admin", None)
         if admin is None:
             return None
         payload = {
@@ -2290,26 +2306,34 @@ def _generate_supabase_recovery_link(auth: Any, email: str) -> str | None:
     return None
 
 
-def _trigger_supabase_password_reset(auth: Any, email: str) -> tuple[bool, str]:
-    if not email.strip():
-        return False, "email missing"
-    redirect_to = _password_reset_redirect_default()
-    errors: list[str] = []
+def _create_user_with_admin(*, email: str, password: str, full_name: str) -> tuple[str | None, str | None, str | None]:
+    admin_auth, admin_err = _admin_auth_client()
+    if admin_auth is None:
+        return None, None, admin_err or "Supabase admin client unavailable"
+    admin = getattr(admin_auth, "admin", None)
+    if admin is None:
+        return None, None, "Supabase admin API unavailable"
 
+    payload = {
+        "email": email,
+        "password": password,
+        "email_confirm": True,
+        "user_metadata": {"name": full_name},
+    }
+    errors: list[str] = []
     calls = [
-        lambda: auth.reset_password_for_email(email, {"redirect_to": redirect_to}),
-        lambda: auth.reset_password_for_email(email, redirect_to=redirect_to),
-        lambda: auth.reset_password_email(email, {"redirect_to": redirect_to}),
-        lambda: auth.reset_password_email(email, redirect_to=redirect_to),
+        lambda: admin.create_user(payload),
+        lambda: admin.create_user(**payload),
     ]
     for call in calls:
         try:
-            call()
-            return True, "reset triggered"
+            response = call()
+            user_id, user_email = _extract_auth_identity(response)
+            if user_id:
+                return user_id, user_email or email, None
         except Exception as exc:
             errors.append(str(exc))
-
-    return False, " | ".join(errors[-2:]) if errors else "reset methods unavailable"
+    return None, None, (errors[-1] if errors else "create_user failed")
 
 
 def _set_auth_identity(user_id: str, email: str | None) -> None:
@@ -2359,6 +2383,15 @@ def _render_auth_gate() -> bool:
                     st.error("Sign in failed. Check credentials or email verification status.")
                 else:
                     _set_auth_identity(user_id, user_email or email)
+                    sign_in_mail = email_adapter.send_email(
+                        to_email=(user_email or email.strip()),
+                        template_type="signin",
+                        user_name=_default_user_name("", user_email or email),
+                        role="User",
+                        user_email=(user_email or email.strip()),
+                    )
+                    if not sign_in_mail.ok:
+                        st.error(f"SendGrid sign-in email failed: {sign_in_mail.detail}")
                     st.rerun()
             except Exception as exc:
                 st.error(_friendly_auth_error(exc))
@@ -2399,8 +2432,13 @@ def _render_auth_gate() -> bool:
                     if not target_email:
                         st.error("Email is required.")
                     else:
-                        reset_ok, reset_detail = _trigger_supabase_password_reset(auth, target_email)
                         recovery_link = _generate_supabase_recovery_link(auth, target_email)
+                        if not recovery_link:
+                            st.error(
+                                "Unable to generate password reset link from Supabase admin API. "
+                                "Set `SUPABASE_SERVICE_KEY` in secrets."
+                            )
+                            recovery_link = ""
                         send_result = email_adapter.send_email(
                             to_email=target_email,
                             template_type="forgot",
@@ -2409,11 +2447,10 @@ def _render_auth_gate() -> bool:
                             user_email=target_email,
                             reset_link=recovery_link or _password_reset_redirect_default(),
                         )
-                        st.success("If the account exists, password reset instructions were sent.")
-                        if not reset_ok:
-                            st.info(f"Reset trigger detail: {reset_detail}")
-                        if not send_result.ok:
-                            st.info(f"Custom email sender: {send_result.detail}")
+                        if send_result.ok:
+                            st.success("If the account exists, password reset instructions were sent.")
+                        else:
+                            st.error(f"SendGrid email send failed: {send_result.detail}")
 
             elif recovery_action == "Forgot Username":
                 with st.form("auth_forgot_username_form"):
@@ -2461,10 +2498,18 @@ def _render_auth_gate() -> bool:
                 st.error("Workspace is not configured.")
             else:
                 try:
-                    response = auth.sign_up(
-                        {"email": email_su.strip(), "password": pwd_su}
+                    user_id, user_email, create_error = _create_user_with_admin(
+                        email=email_su.strip(),
+                        password=pwd_su,
+                        full_name=full_name_su.strip(),
                     )
-                    user_id, user_email = _extract_auth_identity(response)
+                    if not user_id:
+                        st.error(
+                            create_error
+                            or "Failed to create user with Supabase admin API. "
+                            "Ensure SUPABASE_SERVICE_KEY is configured."
+                        )
+                        return False
                     target_signup_email = (user_email or email_su.strip())
                     send_result = email_adapter.send_email(
                         to_email=target_signup_email,
@@ -2473,30 +2518,23 @@ def _render_auth_gate() -> bool:
                         role=_role_label(role_su),
                         user_email=target_signup_email,
                     )
-                    if not user_id:
-                        st.info(
-                            "Sign-up request submitted. Verify your email, then sign in."
-                        )
-                        if not send_result.ok:
-                            st.info(f"Signup confirmation email not sent: {send_result.detail}")
-                    else:
-                        service.register_officer(
-                            officer_id=user_id,
-                            tenant_id=workspace_id,
-                            role=role_su,
-                            display_name=full_name_su.strip(),
-                        )
-                        service.repo.upsert_tenant_membership(
-                            user_id=user_id,
-                            tenant_id=workspace_id,
-                            role=role_su,
-                            status="ACTIVE",
-                        )
-                        _set_auth_identity(user_id, user_email or email_su)
-                        st.success("Account created and linked. Signed in.")
-                        if not send_result.ok:
-                            st.info(f"Signup confirmation email not sent: {send_result.detail}")
-                        st.rerun()
+                    service.register_officer(
+                        officer_id=user_id,
+                        tenant_id=workspace_id,
+                        role=role_su,
+                        display_name=full_name_su.strip(),
+                    )
+                    service.repo.upsert_tenant_membership(
+                        user_id=user_id,
+                        tenant_id=workspace_id,
+                        role=role_su,
+                        status="ACTIVE",
+                    )
+                    _set_auth_identity(user_id, user_email or email_su)
+                    st.success("Account created and linked. Signed in.")
+                    if not send_result.ok:
+                        st.error(f"SendGrid signup email failed: {send_result.detail}")
+                    st.rerun()
                 except Exception as exc:
                     st.error(_friendly_auth_error(exc))
 
