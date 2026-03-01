@@ -114,12 +114,35 @@ def _init_session() -> None:
     st.session_state.setdefault("active_profile", ROLE_VERIFIER)
 
 
+def _continue_local_mode(name: str, email: str = "") -> None:
+    safe_name = name.strip() or "Local User"
+    safe_email = email.strip() or "local@offline"
+    st.session_state["auth_user"] = {
+        "user_id": f"local-{safe_name.lower().replace(' ', '-')}",
+        "email": safe_email,
+        "name": safe_name,
+        "role": ROLE_VERIFIER,
+        "auth_mode": "local",
+    }
+    st.session_state["active_profile"] = ROLE_VERIFIER
+    st.rerun()
+
+
 def _render_auth_page(auth_service: AuthService) -> None:
     st.title("GovDocIQ Access")
     st.caption("Sign in to access your workspace.")
 
     if not auth_service.configured():
-        st.error("Supabase authentication is not available. Configure SUPABASE_URL and SUPABASE_KEY/ANON key.")
+        st.warning("Supabase authentication is unavailable. Continue in local mode.")
+        local_name = st.text_input("Name", key="local_name")
+        local_email = st.text_input("Email (optional)", key="local_email")
+        if st.button("Continue in Local Mode", use_container_width=True, key="local_continue_btn"):
+            if not local_name.strip():
+                st.error("Name is required.")
+            else:
+                _continue_local_mode(local_name, local_email)
+        st.caption("Local mode uses in-memory storage and does not require Supabase Auth.")
+        return
 
     t1, t2 = st.tabs(["Sign In", "Sign Up"])
 
@@ -423,6 +446,8 @@ def main() -> None:
         user_name = str(user.get("name") or "User")
         user_email = str(user.get("email") or "")
         st.write({"name": user_name, "email": user_email})
+        if str(user.get("auth_mode") or "") == "local":
+            st.caption("Mode: Local (offline/no Supabase auth)")
 
         role_idx = ALL_ROLES.index(st.session_state.get("active_profile", ROLE_VERIFIER)) if st.session_state.get("active_profile", ROLE_VERIFIER) in ALL_ROLES else 0
         active_profile = st.selectbox("Profile", ALL_ROLES, index=role_idx)
