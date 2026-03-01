@@ -2149,20 +2149,21 @@ def _render_auth_gate() -> bool:
             email_su = st.text_input("Email", value="", placeholder="name@department.gov")
             pwd_su = st.text_input("Password", type="password")
             pwd_confirm = st.text_input("Confirm Password", type="password")
-            dept_id = st.text_input("Department ID", value="", placeholder="dept-education")
             role_su = st.selectbox(
                 "Role",
                 ALL_ROLES,
                 format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
             )
+            st.caption(f"Department: `{settings.default_department_id}`")
             submit_sign_up = st.form_submit_button("Create Account", use_container_width=True)
 
         if submit_sign_up:
+            dept_id = settings.default_department_id.strip()
             if pwd_su != pwd_confirm:
                 st.error("Passwords do not match.")
             elif len(pwd_su) < 8:
                 st.error("Password must be at least 8 characters.")
-            elif not dept_id.strip():
+            elif not dept_id:
                 st.error("Department ID is required.")
             else:
                 try:
@@ -2177,13 +2178,13 @@ def _render_auth_gate() -> bool:
                     else:
                         service.register_officer(
                             officer_id=user_id,
-                            tenant_id=dept_id.strip(),
+                            tenant_id=dept_id,
                             role=role_su,
-                            display_name=dept_id.strip(),
+                            display_name=dept_id,
                         )
                         service.repo.upsert_tenant_membership(
                             user_id=user_id,
-                            tenant_id=dept_id.strip(),
+                            tenant_id=dept_id,
                             role=role_su,
                             status="ACTIVE",
                         )
@@ -2207,8 +2208,8 @@ def _resolve_access_context() -> tuple[str, str, str] | None:
 
     st.warning("Your account is authenticated but not yet linked to a department profile.")
     with st.form("complete_profile_form"):
-        dept_id = st.text_input("Department ID", value="", placeholder="dept-education")
-        dept_name = st.text_input("Department Display Name (optional)", value="")
+        dept_id = settings.default_department_id.strip()
+        st.caption(f"Department: `{dept_id}`")
         role = st.selectbox(
             "Role",
             ALL_ROLES,
@@ -2223,13 +2224,13 @@ def _resolve_access_context() -> tuple[str, str, str] | None:
             try:
                 service.register_officer(
                     officer_id=officer_id,
-                    tenant_id=dept_id.strip(),
+                    tenant_id=dept_id,
                     role=role,
-                    display_name=(dept_name.strip() or dept_id.strip()),
+                    display_name=dept_id,
                 )
                 service.repo.upsert_tenant_membership(
                     user_id=officer_id,
-                    tenant_id=dept_id.strip(),
+                    tenant_id=dept_id,
                     role=role,
                     status="ACTIVE",
                 )

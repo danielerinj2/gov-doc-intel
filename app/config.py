@@ -80,6 +80,7 @@ def _pick_supabase_key() -> str:
 @dataclass(frozen=True)
 class Settings:
     app_env: str
+    default_department_id: str
     supabase_url: str
     supabase_key: str
     groq_api_key: str
@@ -110,6 +111,7 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         app_env=_get_config_value("APP_ENV", default="dev"),
+        default_department_id=_get_config_value("DEFAULT_DEPARTMENT_ID", "DEPARTMENT_ID", default="dept-education"),
         supabase_url=_get_config_value("SUPABASE_URL").rstrip("/"),
         supabase_key=_pick_supabase_key(),
         groq_api_key=_get_config_value("GROQ_API_KEY"),
