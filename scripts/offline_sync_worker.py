@@ -31,7 +31,7 @@ def main() -> None:
 
     current_officer = service.repo.get_officer(args.officer_id)
     if not current_officer or str(current_officer.get("tenant_id")) != args.tenant_id:
-        service.register_officer(args.officer_id, args.tenant_id, "tenant_operator")
+        service.register_officer(args.officer_id, args.tenant_id, "verifier")
 
     pending = service.repo.list_pending_offline_documents(args.tenant_id, limit=args.fetch_limit)
     pending_ids = [str(row.get("id")) for row in pending if row.get("id")]

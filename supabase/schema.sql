@@ -13,15 +13,15 @@ create table if not exists public.officers (
     tenant_id text not null references public.tenants(tenant_id) on delete cascade,
     role text not null check (
         role in (
-            'case_worker',
-            'reviewer',
-            'admin',
+            'verifier',
+            'verifier',
+            'senior_verifier',
             'auditor',
-            'tenant_operator',
-            'tenant_officer',
-            'tenant_senior_officer',
-            'tenant_admin',
-            'tenant_auditor'
+            'verifier',
+            'verifier',
+            'senior_verifier',
+            'senior_verifier',
+            'auditor'
         )
     ),
     status text not null default 'ACTIVE' check (status in ('ACTIVE', 'SUSPENDED')),
@@ -31,15 +31,15 @@ create index if not exists idx_officers_tenant on public.officers (tenant_id, st
 alter table public.officers drop constraint if exists officers_role_check;
 alter table public.officers add constraint officers_role_check check (
     role in (
-        'case_worker',
-        'reviewer',
-        'admin',
+        'verifier',
+        'verifier',
+        'senior_verifier',
         'auditor',
-        'tenant_operator',
-        'tenant_officer',
-        'tenant_senior_officer',
-        'tenant_admin',
-        'tenant_auditor'
+        'verifier',
+        'verifier',
+        'senior_verifier',
+        'senior_verifier',
+        'auditor'
     )
 );
 
@@ -86,7 +86,7 @@ create table if not exists public.tenant_partition_configs (
 create table if not exists public.platform_access_grants (
     id uuid primary key default gen_random_uuid(),
     actor_id text not null,
-    platform_role text not null check (platform_role in ('platform_super_admin', 'platform_auditor')),
+    platform_role text not null check (platform_role in ('platform_admin', 'platform_admin')),
     justification text not null,
     approved_by text not null,
     status text not null default 'ACTIVE' check (status in ('ACTIVE', 'REVOKED', 'EXPIRED')),
@@ -517,7 +517,7 @@ values (
     'SEV2',
     'OCR cluster unavailable',
     '["Check OCR service health endpoint", "Fail over to standby OCR pool", "Notify tenant admin and SRE"]'::jsonb,
-    'tenant_admin'
+    'senior_verifier'
 )
 on conflict do nothing;
 
@@ -526,5 +526,5 @@ values ('dept-education', 'tenant-dept-education', null)
 on conflict (bucket_name) do nothing;
 
 insert into public.officers (officer_id, tenant_id, role, status)
-values ('officer-001', 'dept-education', 'case_worker', 'ACTIVE')
+values ('officer-001', 'dept-education', 'verifier', 'ACTIVE')
 on conflict (officer_id) do nothing;

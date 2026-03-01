@@ -11,15 +11,15 @@ create table if not exists public.tenant_memberships (
     tenant_id text not null references public.tenants(tenant_id) on delete cascade,
     role text not null check (
         role in (
-            'case_worker',
-            'reviewer',
-            'admin',
+            'verifier',
+            'verifier',
+            'senior_verifier',
             'auditor',
-            'tenant_operator',
-            'tenant_officer',
-            'tenant_senior_officer',
-            'tenant_admin',
-            'tenant_auditor'
+            'verifier',
+            'verifier',
+            'senior_verifier',
+            'senior_verifier',
+            'auditor'
         )
     ),
     status text not null default 'ACTIVE' check (status in ('ACTIVE', 'SUSPENDED')),
@@ -30,15 +30,15 @@ create table if not exists public.tenant_memberships (
 alter table public.tenant_memberships drop constraint if exists tenant_memberships_role_check;
 alter table public.tenant_memberships add constraint tenant_memberships_role_check check (
     role in (
-        'case_worker',
-        'reviewer',
-        'admin',
+        'verifier',
+        'verifier',
+        'senior_verifier',
         'auditor',
-        'tenant_operator',
-        'tenant_officer',
-        'tenant_senior_officer',
-        'tenant_admin',
-        'tenant_auditor'
+        'verifier',
+        'verifier',
+        'senior_verifier',
+        'senior_verifier',
+        'auditor'
     )
 );
 
@@ -85,7 +85,7 @@ stable
 security definer
 set search_path = public
 as $$
-    select public.has_platform_role(array['platform_super_admin', 'platform_auditor'])
+    select public.has_platform_role(array['platform_admin', 'platform_admin'])
     or exists (
         select 1
         from public.tenant_memberships tm
@@ -182,8 +182,8 @@ create policy tenants_update_admin
 on public.tenants
 for update
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
 -- officers
  drop policy if exists officers_select_tenant on public.officers;
@@ -198,8 +198,8 @@ create policy officers_write_admin
 on public.officers
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
 -- tenant policies/templates/rules/storage/api keys
  drop policy if exists tenant_policies_select_tenant on public.tenant_policies;
@@ -214,8 +214,8 @@ create policy tenant_policies_write_admin
 on public.tenant_policies
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_data_policies_select_tenant on public.tenant_data_policies;
 create policy tenant_data_policies_select_tenant
@@ -229,8 +229,8 @@ create policy tenant_data_policies_write_admin
 on public.tenant_data_policies
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_partition_configs_select_tenant on public.tenant_partition_configs;
 create policy tenant_partition_configs_select_tenant
@@ -244,8 +244,8 @@ create policy tenant_partition_configs_write_admin
 on public.tenant_partition_configs
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_templates_select_tenant on public.tenant_templates;
 create policy tenant_templates_select_tenant
@@ -259,8 +259,8 @@ create policy tenant_templates_write_admin
 on public.tenant_templates
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_rules_select_tenant on public.tenant_rules;
 create policy tenant_rules_select_tenant
@@ -274,8 +274,8 @@ create policy tenant_rules_write_admin
 on public.tenant_rules
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_storage_buckets_select_tenant on public.tenant_storage_buckets;
 create policy tenant_storage_buckets_select_tenant
@@ -289,23 +289,23 @@ create policy tenant_storage_buckets_write_admin
 on public.tenant_storage_buckets
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_api_keys_select_admin on public.tenant_api_keys;
 create policy tenant_api_keys_select_admin
 on public.tenant_api_keys
 for select
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_api_keys_write_admin on public.tenant_api_keys;
 create policy tenant_api_keys_write_admin
 on public.tenant_api_keys
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
 -- documents/events/disputes
  drop policy if exists documents_select_tenant on public.documents;
@@ -320,22 +320,22 @@ create policy documents_insert_tenant_writer
 on public.documents
 for insert
 to authenticated
-with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+with check (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists documents_update_tenant_writer on public.documents;
 create policy documents_update_tenant_writer
 on public.documents
 for update
 to authenticated
-using (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
- drop policy if exists documents_delete_tenant_admin on public.documents;
-create policy documents_delete_tenant_admin
+ drop policy if exists documents_delete_senior_verifier on public.documents;
+create policy documents_delete_senior_verifier
 on public.documents
 for delete
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists document_events_select_tenant on public.document_events;
 create policy document_events_select_tenant
@@ -357,7 +357,7 @@ on public.document_events
 for insert
 to authenticated
 with check (
-    public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin'])
+    public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier'])
     and exists (
         select 1 from public.documents d
         where d.id = document_events.document_id
@@ -385,7 +385,7 @@ on public.disputes
 for insert
 to authenticated
 with check (
-    public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin'])
+    public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier'])
     and exists (
         select 1 from public.documents d
         where d.id = disputes.document_id
@@ -393,20 +393,20 @@ with check (
     )
 );
 
- drop policy if exists disputes_update_tenant_reviewer on public.disputes;
-create policy disputes_update_tenant_reviewer
+ drop policy if exists disputes_update_tenant_verifier on public.disputes;
+create policy disputes_update_tenant_verifier
 on public.disputes
 for update
 to authenticated
-using (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
- drop policy if exists disputes_delete_tenant_admin on public.disputes;
-create policy disputes_delete_tenant_admin
+ drop policy if exists disputes_delete_senior_verifier on public.disputes;
+create policy disputes_delete_senior_verifier
 on public.disputes
 for delete
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
 -- notifications / escalations / document record
  drop policy if exists citizen_notifications_select_tenant on public.citizen_notifications;
@@ -421,7 +421,7 @@ create policy citizen_notifications_insert_writer
 on public.citizen_notifications
 for insert
 to authenticated
-with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+with check (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists review_escalations_select_tenant on public.review_escalations;
 create policy review_escalations_select_tenant
@@ -430,13 +430,13 @@ for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
- drop policy if exists review_escalations_write_reviewer on public.review_escalations;
-create policy review_escalations_write_reviewer
+ drop policy if exists review_escalations_write_verifier on public.review_escalations;
+create policy review_escalations_write_verifier
 on public.review_escalations
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists document_records_select_tenant on public.document_records;
 create policy document_records_select_tenant
@@ -450,8 +450,8 @@ create policy document_records_write_writer
 on public.document_records
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists model_audit_logs_select_tenant on public.model_audit_logs;
 create policy model_audit_logs_select_tenant
@@ -465,7 +465,7 @@ create policy model_audit_logs_insert_writer
 on public.model_audit_logs
 for insert
 to authenticated
-with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+with check (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists module_metrics_select_tenant on public.module_metrics;
 create policy module_metrics_select_tenant
@@ -479,7 +479,7 @@ create policy module_metrics_insert_writer
 on public.module_metrics
 for insert
 to authenticated
-with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+with check (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists human_review_assignments_select_tenant on public.human_review_assignments;
 create policy human_review_assignments_select_tenant
@@ -488,13 +488,13 @@ for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
- drop policy if exists human_review_assignments_write_reviewer on public.human_review_assignments;
-create policy human_review_assignments_write_reviewer
+ drop policy if exists human_review_assignments_write_verifier on public.human_review_assignments;
+create policy human_review_assignments_write_verifier
 on public.human_review_assignments
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists webhook_outbox_select_tenant on public.webhook_outbox;
 create policy webhook_outbox_select_tenant
@@ -508,8 +508,8 @@ create policy webhook_outbox_write_writer
 on public.webhook_outbox
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['case_worker', 'reviewer', 'admin', 'tenant_operator', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['verifier', 'verifier', 'senior_verifier', 'verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists correction_events_select_tenant on public.correction_events;
 create policy correction_events_select_tenant
@@ -518,12 +518,12 @@ for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
- drop policy if exists correction_events_insert_reviewer on public.correction_events;
-create policy correction_events_insert_reviewer
+ drop policy if exists correction_events_insert_verifier on public.correction_events;
+create policy correction_events_insert_verifier
 on public.correction_events
 for insert
 to authenticated
-with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+with check (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists correction_validation_gate_select_tenant on public.correction_validation_gate;
 create policy correction_validation_gate_select_tenant
@@ -532,13 +532,13 @@ for select
 to authenticated
 using (public.is_tenant_member(tenant_id));
 
- drop policy if exists correction_validation_gate_write_reviewer on public.correction_validation_gate;
-create policy correction_validation_gate_write_reviewer
+ drop policy if exists correction_validation_gate_write_verifier on public.correction_validation_gate;
+create policy correction_validation_gate_write_verifier
 on public.correction_validation_gate
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists operational_runbooks_select_tenant on public.operational_runbooks;
 create policy operational_runbooks_select_tenant
@@ -552,8 +552,8 @@ create policy operational_runbooks_write_admin
 on public.operational_runbooks
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists governance_audit_reviews_select_tenant on public.governance_audit_reviews;
 create policy governance_audit_reviews_select_tenant
@@ -567,23 +567,23 @@ create policy governance_audit_reviews_write_admin
 on public.governance_audit_reviews
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
- drop policy if exists platform_access_grants_select_platform_auditor on public.platform_access_grants;
-create policy platform_access_grants_select_platform_auditor
+ drop policy if exists platform_access_grants_select_platform_admin on public.platform_access_grants;
+create policy platform_access_grants_select_platform_admin
 on public.platform_access_grants
 for select
 to authenticated
-using (public.has_platform_role(array['platform_auditor', 'platform_super_admin']));
+using (public.has_platform_role(array['platform_admin', 'platform_admin']));
 
- drop policy if exists platform_access_grants_write_platform_super_admin on public.platform_access_grants;
-create policy platform_access_grants_write_platform_super_admin
+ drop policy if exists platform_access_grants_write_platform_admin on public.platform_access_grants;
+create policy platform_access_grants_write_platform_admin
 on public.platform_access_grants
 for all
 to authenticated
-using (public.has_platform_role(array['platform_super_admin']))
-with check (public.has_platform_role(array['platform_super_admin']));
+using (public.has_platform_role(array['platform_admin']))
+with check (public.has_platform_role(array['platform_admin']));
 
  drop policy if exists tenant_kpi_targets_select_tenant on public.tenant_kpi_targets;
 create policy tenant_kpi_targets_select_tenant
@@ -597,8 +597,8 @@ create policy tenant_kpi_targets_write_admin
 on public.tenant_kpi_targets
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_kpi_snapshots_select_tenant on public.tenant_kpi_snapshots;
 create policy tenant_kpi_snapshots_select_tenant
@@ -612,7 +612,7 @@ create policy tenant_kpi_snapshots_insert_writer
 on public.tenant_kpi_snapshots
 for insert
 to authenticated
-with check (public.has_tenant_role(tenant_id, array['reviewer', 'admin', 'tenant_officer', 'tenant_senior_officer', 'tenant_admin']));
+with check (public.has_tenant_role(tenant_id, array['verifier', 'senior_verifier', 'verifier', 'senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_rollout_phases_select_tenant on public.tenant_rollout_phases;
 create policy tenant_rollout_phases_select_tenant
@@ -626,8 +626,8 @@ create policy tenant_rollout_phases_write_admin
 on public.tenant_rollout_phases
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
  drop policy if exists tenant_risk_register_select_tenant on public.tenant_risk_register;
 create policy tenant_risk_register_select_tenant
@@ -641,8 +641,8 @@ create policy tenant_risk_register_write_admin
 on public.tenant_risk_register
 for all
 to authenticated
-using (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']))
-with check (public.has_tenant_role(tenant_id, array['admin', 'tenant_admin']));
+using (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']))
+with check (public.has_tenant_role(tenant_id, array['senior_verifier', 'senior_verifier']));
 
 -- Grants
 revoke all on table public.tenants from anon;

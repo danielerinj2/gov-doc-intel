@@ -5,8 +5,7 @@ from typing import Any
 
 from app.infra.repositories import (
     PLATFORM_ROLES,
-    ROLE_PLATFORM_AUDITOR,
-    ROLE_PLATFORM_SUPER_ADMIN,
+    ROLE_PLATFORM_ADMIN,
     ADMIN_ROLES,
     Repository,
 )
@@ -107,7 +106,7 @@ class GovernanceService:
         return self.repo.list_platform_access_grants(actor_id=actor_id)
 
     def cross_tenant_audit_overview(self, actor_id: str) -> dict[str, Any]:
-        if not self.repo.has_platform_access(actor_id, {ROLE_PLATFORM_AUDITOR, ROLE_PLATFORM_SUPER_ADMIN}):
+        if not self.repo.has_platform_access(actor_id, {ROLE_PLATFORM_ADMIN}):
             raise PermissionError("Platform-level cross-tenant access not granted")
 
         tenants = self.repo.list_platform_tenants()

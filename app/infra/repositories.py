@@ -11,44 +11,28 @@ from app.domain.states import DocumentState
 from app.infra.supabase_client import exec_query, get_supabase_client
 
 
-ROLE_OPERATOR = "tenant_operator"
-ROLE_OFFICER = "tenant_officer"
-ROLE_SENIOR_OFFICER = "tenant_senior_officer"
-ROLE_ADMIN = "tenant_admin"
-ROLE_AUDITOR = "tenant_auditor"
-ROLE_PLATFORM_SUPER_ADMIN = "platform_super_admin"
-ROLE_PLATFORM_AUDITOR = "platform_auditor"
+ROLE_VERIFIER = "verifier"
+ROLE_SENIOR_VERIFIER = "senior_verifier"
+ROLE_AUDITOR = "auditor"
+ROLE_PLATFORM_ADMIN = "platform_admin"
 
-TENANT_ROLE_ALIASES = {
-    # Legacy role names kept for backward compatibility with existing records.
-    "case_worker": ROLE_OPERATOR,
-    "reviewer": ROLE_OFFICER,
-    "admin": ROLE_ADMIN,
-    "auditor": ROLE_AUDITOR,
-    ROLE_OPERATOR: ROLE_OPERATOR,
-    ROLE_OFFICER: ROLE_OFFICER,
-    ROLE_SENIOR_OFFICER: ROLE_SENIOR_OFFICER,
-    ROLE_ADMIN: ROLE_ADMIN,
+ROLE_ALIASES = {
+    ROLE_VERIFIER: ROLE_VERIFIER,
+    ROLE_SENIOR_VERIFIER: ROLE_SENIOR_VERIFIER,
     ROLE_AUDITOR: ROLE_AUDITOR,
+    ROLE_PLATFORM_ADMIN: ROLE_PLATFORM_ADMIN,
 }
 
-TENANT_WRITER_ROLES = {
-    ROLE_OPERATOR,
-    ROLE_OFFICER,
-    ROLE_SENIOR_OFFICER,
-    ROLE_ADMIN,
+WRITER_ROLES = {
+    ROLE_VERIFIER,
+    ROLE_SENIOR_VERIFIER,
 }
-TENANT_REVIEW_ROLES = {
-    ROLE_OFFICER,
-    ROLE_SENIOR_OFFICER,
-    ROLE_ADMIN,
+REVIEW_ROLES = {
+    ROLE_VERIFIER,
+    ROLE_SENIOR_VERIFIER,
 }
-TENANT_ADMIN_ROLES = {ROLE_ADMIN}
-PLATFORM_ROLES = {ROLE_PLATFORM_SUPER_ADMIN, ROLE_PLATFORM_AUDITOR}
-
-WRITER_ROLES = set(TENANT_WRITER_ROLES)
-REVIEW_ROLES = set(TENANT_REVIEW_ROLES)
-ADMIN_ROLES = set(TENANT_ADMIN_ROLES)
+ADMIN_ROLES = {ROLE_SENIOR_VERIFIER}
+PLATFORM_ROLES = {ROLE_PLATFORM_ADMIN}
 
 
 class MemoryStore:
@@ -95,7 +79,7 @@ def _hash_key(raw: str) -> str:
 
 def _normalize_role(role: str) -> str:
     canonical = role.strip().lower()
-    return TENANT_ROLE_ALIASES.get(canonical, canonical)
+    return ROLE_ALIASES.get(canonical, canonical)
 
 
 def _sanitize_tenant_for_bucket(tenant_id: str) -> str:
@@ -974,7 +958,7 @@ class Repository:
             row
             for row in self.list_officers(tenant_id)
             if str(row.get("status", "ACTIVE")) == "ACTIVE"
-            and _normalize_role(str(row.get("role", ""))) in TENANT_REVIEW_ROLES
+            and _normalize_role(str(row.get("role", ""))) in REVIEW_ROLES
         ]
         if not officers:
             return None

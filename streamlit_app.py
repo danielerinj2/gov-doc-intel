@@ -11,13 +11,10 @@ import streamlit as st
 
 from app.config import settings
 from app.infra.repositories import (
-    ROLE_ADMIN,
     ROLE_AUDITOR,
-    ROLE_OFFICER,
-    ROLE_OPERATOR,
-    ROLE_PLATFORM_AUDITOR,
-    ROLE_PLATFORM_SUPER_ADMIN,
-    ROLE_SENIOR_OFFICER,
+    ROLE_PLATFORM_ADMIN,
+    ROLE_SENIOR_VERIFIER,
+    ROLE_VERIFIER,
 )
 from app.services.document_service import DocumentService
 from app.services.governance_service import GovernanceService
@@ -269,28 +266,31 @@ offline_service = OfflineService(service)
 
 # ── Role constants ─────────────────────────────────────────────────────────────
 ALL_ROLES = [
-    ROLE_OPERATOR,
-    ROLE_OFFICER,
-    ROLE_SENIOR_OFFICER,
-    ROLE_ADMIN,
+    ROLE_VERIFIER,
+    ROLE_SENIOR_VERIFIER,
     ROLE_AUDITOR,
-    ROLE_PLATFORM_AUDITOR,
-    ROLE_PLATFORM_SUPER_ADMIN,
+    ROLE_PLATFORM_ADMIN,
 ]
 
-WRITE_ROLES = {
-    ROLE_OPERATOR, ROLE_OFFICER, ROLE_SENIOR_OFFICER, ROLE_ADMIN,
-}
-REVIEW_ROLES = {
-    ROLE_OFFICER, ROLE_SENIOR_OFFICER, ROLE_ADMIN,
-}
-SENIOR_REVIEW_ROLES = {ROLE_SENIOR_OFFICER, ROLE_ADMIN}
-ADMIN_ROLES = {ROLE_ADMIN}
-AUDIT_ROLES = {ROLE_AUDITOR, ROLE_ADMIN}
-PLATFORM_ROLES = {ROLE_PLATFORM_AUDITOR, ROLE_PLATFORM_SUPER_ADMIN}
-SENSITIVE_VIEW_ROLES = {
-    ROLE_OPERATOR, ROLE_OFFICER, ROLE_SENIOR_OFFICER, ROLE_ADMIN,
-}
+# Both Verifier and Senior Verifier can write and review.
+# The sets are intentionally identical — the gate structure
+# is preserved so they can be split again if needed later.
+WRITE_ROLES = {ROLE_VERIFIER, ROLE_SENIOR_VERIFIER}
+REVIEW_ROLES = {ROLE_VERIFIER, ROLE_SENIOR_VERIFIER}
+
+# Only Senior Verifier can resolve disputes, manage config,
+# govern templates/rules, and manage officer accounts.
+SENIOR_ROLES = {ROLE_SENIOR_VERIFIER}
+
+# Auditor and Senior Verifier can both read audit data.
+# Senior Verifier needs audit read to support governance decisions.
+AUDIT_ROLES = {ROLE_AUDITOR, ROLE_SENIOR_VERIFIER}
+
+# Platform Admin only — cross-tenant operations.
+PLATFORM_ROLES = {ROLE_PLATFORM_ADMIN}
+
+# Who can see unmasked PII fields.
+SENSITIVE_VIEW_ROLES = {ROLE_VERIFIER, ROLE_SENIOR_VERIFIER}
 
 # ── Pages ──────────────────────────────────────────────────────────────────────
 PAGES = [
@@ -309,28 +309,45 @@ PAGES = [
 ]
 
 PAGE_ACCESS: dict[str, set[str]] = {
-    "🏠 Dashboard":              set(ALL_ROLES),
-    "📥 Intake & Processing":    WRITE_ROLES,
-    "🔍 Review Workbench":       REVIEW_ROLES,
-    "⚖️ Dispute Desk":           SENIOR_REVIEW_ROLES,
-    "🛡️ Fraud & Authenticity":   REVIEW_ROLES,
-    "💬 Citizen Communication":  WRITE_ROLES | REVIEW_ROLES,
-    "📋 Audit Trail":            AUDIT_ROLES | REVIEW_ROLES | PLATFORM_ROLES,
-    "📊 Governance & KPI":       ADMIN_ROLES | {ROLE_AUDITOR} | PLATFORM_ROLES,
-    "🖥️ Ops Monitor":            ADMIN_ROLES | REVIEW_ROLES | PLATFORM_ROLES,
-    "🔗 Integrations":           ADMIN_ROLES,
-    "📴 Offline Sync":           WRITE_ROLES | ADMIN_ROLES,
-    "🤖 ML Training":            ADMIN_ROLES | REVIEW_ROLES | AUDIT_ROLES,
+    "🏠 Dashboard":             set(ALL_ROLES),
+    "📥 Intake & Processing":   WRITE_ROLES,
+    "🔍 Review Workbench":      REVIEW_ROLES,
+    "⚖️ Dispute Desk":          SENIOR_ROLES,
+    "🛡️ Fraud & Authenticity":  REVIEW_ROLES,
+    "💬 Citizen Communication": WRITE_ROLES,
+    "📋 Audit Trail":           AUDIT_ROLES | PLATFORM_ROLES,
+    "📊 Governance & KPI":      SENIOR_ROLES | AUDIT_ROLES | PLATFORM_ROLES,
+    "🖥️ Ops Monitor":           SENIOR_ROLES | AUDIT_ROLES | PLATFORM_ROLES,
+    "🔗 Integrations":          SENIOR_ROLES | PLATFORM_ROLES,
+    "📴 Offline Sync":          WRITE_ROLES,
+    "🤖 ML Training":           SENIOR_ROLES | AUDIT_ROLES | PLATFORM_ROLES,
 }
 
 ROLE_META: dict[str, dict[str, str]] = {
-    ROLE_OPERATOR:              {"icon": "🧑‍💼", "label": "Operator",        "color": "#4fc3f7"},
-    ROLE_OFFICER:               {"icon": "👮",   "label": "Officer",          "color": "#81c784"},
-    ROLE_SENIOR_OFFICER:        {"icon": "🎖️",  "label": "Senior Officer",   "color": "#ffb74d"},
-    ROLE_ADMIN:                 {"icon": "🔑",   "label": "Admin",            "color": "#ce93d8"},
-    ROLE_AUDITOR:               {"icon": "🔎",   "label": "Auditor",          "color": "#80deea"},
-    ROLE_PLATFORM_AUDITOR:      {"icon": "🌐",   "label": "Platform Auditor", "color": "#f48fb1"},
-    ROLE_PLATFORM_SUPER_ADMIN:  {"icon": "👑",   "label": "Platform Admin",   "color": "#ffcc02"},
+    ROLE_VERIFIER: {
+        "icon": "🧑‍💼",
+        "label": "Verifier",
+        "color": "#4fc3f7",
+        "desc": "Frontline document intake, OCR, and standard review decisions.",
+    },
+    ROLE_SENIOR_VERIFIER: {
+        "icon": "🎖️",
+        "label": "Senior Verifier",
+        "color": "#ffb74d",
+        "desc": "Team lead. Disputes, escalations, governance, officer management.",
+    },
+    ROLE_AUDITOR: {
+        "icon": "🔎",
+        "label": "Auditor",
+        "color": "#80deea",
+        "desc": "Read-only compliance view. Audit trail, KPIs, ML logs.",
+    },
+    ROLE_PLATFORM_ADMIN: {
+        "icon": "👑",
+        "label": "Platform Admin",
+        "color": "#ffcc02",
+        "desc": "Cross-tenant platform operations, tenant provisioning, DR.",
+    },
 }
 
 SCRIPT_OPTIONS = [
@@ -517,7 +534,7 @@ def _hero_banner(role: str, tenant_id: str, officer_id: str) -> None:
         f'<div class="hero-banner">'
         f'<h1>🏛️ GovDocIQ</h1>'
         f'<p class="hero-sub">{dot} AI-Powered Document Verification Platform &nbsp;·&nbsp; '
-        f'Tenant: <strong>{tenant_id}</strong> &nbsp;·&nbsp; '
+        f'Department: <strong>{tenant_id}</strong> &nbsp;·&nbsp; '
         f'Officer: <strong>{officer_id}</strong></p>'
         f'<span class="hero-role" style="background:{meta["color"]}22;'
         f'border:1px solid {meta["color"]};color:{meta["color"]}">'
@@ -610,107 +627,118 @@ def _render_dashboard(
     # ── Role-specific action cards ────────────────────────────────────────────
     _section("⚡ Quick Actions")
 
-    if role == ROLE_OPERATOR:
+    if role == ROLE_VERIFIER:
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(_action_card("📤", "Submit New Document", "Upload and process a citizen document through the AI verification pipeline."), unsafe_allow_html=True)
+            st.markdown(_action_card(
+                "📤", "Submit Document",
+                "Upload and process a citizen document through the AI verification pipeline."
+            ), unsafe_allow_html=True)
             if st.button("Go to Intake →", key="qa_intake", use_container_width=True):
                 st.session_state["_nav_override"] = "📥 Intake & Processing"
                 st.rerun()
         with c2:
-            st.markdown(_action_card("📴", "Offline Capture", "Create a provisional record for service centers without connectivity."), unsafe_allow_html=True)
-            if st.button("Go to Offline →", key="qa_offline", use_container_width=True):
-                st.session_state["_nav_override"] = "📴 Offline Sync"
-                st.rerun()
-        with c3:
-            st.markdown(_action_card("💬", "Citizen Updates", f"View notification history and send status updates to citizens."), unsafe_allow_html=True)
-            if st.button("Go to Comms →", key="qa_comms", use_container_width=True):
-                st.session_state["_nav_override"] = "💬 Citizen Communication"
-                st.rerun()
-
-    elif role == ROLE_OFFICER:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(_action_card("🔍", "Review Queue", f"{waiting} documents awaiting your review. Inspect evidence, validate fields, and decide."), unsafe_allow_html=True)
+            st.markdown(_action_card(
+                "🔍", "Review Queue",
+                f"{waiting} document(s) awaiting review. Inspect evidence and decide."
+            ), unsafe_allow_html=True)
             if st.button("Go to Review →", key="qa_review", use_container_width=True):
                 st.session_state["_nav_override"] = "🔍 Review Workbench"
                 st.rerun()
-        with c2:
-            st.markdown(_action_card("🛡️", "Fraud Alerts", f"{high_risk} high-risk documents flagged for tamper or fraud checks."), unsafe_allow_html=True)
-            if st.button("Go to Fraud →", key="qa_fraud", use_container_width=True):
-                st.session_state["_nav_override"] = "🛡️ Fraud & Authenticity"
-                st.rerun()
         with c3:
-            st.markdown(_action_card("📋", "Audit Trail", "View state history, model versions, and human overrides for any document."), unsafe_allow_html=True)
-            if st.button("Go to Audit →", key="qa_audit", use_container_width=True):
-                st.session_state["_nav_override"] = "📋 Audit Trail"
+            st.markdown(_action_card(
+                "📴", "Offline Capture",
+                "Create a provisional record for service centers without connectivity."
+            ), unsafe_allow_html=True)
+            if st.button("Go to Offline →", key="qa_offline", use_container_width=True):
+                st.session_state["_nav_override"] = "📴 Offline Sync"
                 st.rerun()
 
-    elif role == ROLE_SENIOR_OFFICER:
-        c1, c2, c3 = st.columns(3)
+    elif role == ROLE_SENIOR_VERIFIER:
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(_action_card("⚖️", "Disputes", "Review citizen appeals and resolve internal disagreements between officers."), unsafe_allow_html=True)
+            st.markdown(_action_card(
+                "⚖️", "Disputes",
+                "Resolve citizen appeals and internal officer disagreements."
+            ), unsafe_allow_html=True)
             if st.button("Go to Disputes →", key="qa_disp", use_container_width=True):
                 st.session_state["_nav_override"] = "⚖️ Dispute Desk"
                 st.rerun()
         with c2:
-            st.markdown(_action_card("🔍", "Review Queue", f"{waiting + in_progress} documents in review pipeline."), unsafe_allow_html=True)
+            st.markdown(_action_card(
+                "🔍", "Review Queue",
+                f"{waiting + in_progress} document(s) in the review pipeline."
+            ), unsafe_allow_html=True)
             if st.button("Go to Review →", key="qa_rev2", use_container_width=True):
                 st.session_state["_nav_override"] = "🔍 Review Workbench"
                 st.rerun()
         with c3:
-            st.markdown(_action_card("🛡️", "Fraud Escalations", "High-risk documents requiring senior sign-off."), unsafe_allow_html=True)
-            if st.button("Go to Fraud →", key="qa_fraud2", use_container_width=True):
-                st.session_state["_nav_override"] = "🛡️ Fraud & Authenticity"
-                st.rerun()
-
-    elif role in ADMIN_ROLES:
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.markdown(_action_card("📊", "Governance", "Manage templates, rules, policies, and KPIs."), unsafe_allow_html=True)
-            if st.button("Go →", key="qa_gov", use_container_width=True):
+            st.markdown(_action_card(
+                "📊", "Governance",
+                "Manage templates, rules, policies, and officer accounts."
+            ), unsafe_allow_html=True)
+            if st.button("Go to Governance →", key="qa_gov", use_container_width=True):
                 st.session_state["_nav_override"] = "📊 Governance & KPI"
                 st.rerun()
-        with c2:
-            st.markdown(_action_card("🖥️", "Ops Monitor", f"{'🚨 ' + str(sla_breached) + ' SLA breach' if sla_breached else '✅ All clear'}"), unsafe_allow_html=True)
-            if st.button("Go →", key="qa_ops", use_container_width=True):
-                st.session_state["_nav_override"] = "🖥️ Ops Monitor"
-                st.rerun()
-        with c3:
-            st.markdown(_action_card("🤖", "ML Training", "Correction gate, model drift, and retraining pipeline."), unsafe_allow_html=True)
-            if st.button("Go →", key="qa_ml", use_container_width=True):
-                st.session_state["_nav_override"] = "🤖 ML Training"
-                st.rerun()
         with c4:
-            st.markdown(_action_card("🔗", "Integrations", "API keys, webhooks, and batch export."), unsafe_allow_html=True)
-            if st.button("Go →", key="qa_int", use_container_width=True):
-                st.session_state["_nav_override"] = "🔗 Integrations"
+            ops_label = f"🚨 {sla_breached} SLA breach(es)" if sla_breached else "✅ All clear"
+            st.markdown(_action_card("🖥️", "Ops Monitor", ops_label), unsafe_allow_html=True)
+            if st.button("Go to Ops →", key="qa_ops", use_container_width=True):
+                st.session_state["_nav_override"] = "🖥️ Ops Monitor"
                 st.rerun()
 
     elif role == ROLE_AUDITOR:
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(_action_card("📋", "Audit Trail", "Full state history, event timeline, model versions, and human overrides."), unsafe_allow_html=True)
+            st.markdown(_action_card(
+                "📋", "Audit Trail",
+                "Full state history, event timeline, model versions, and human overrides."
+            ), unsafe_allow_html=True)
             if st.button("Go to Audit →", key="qa_aud", use_container_width=True):
                 st.session_state["_nav_override"] = "📋 Audit Trail"
                 st.rerun()
         with c2:
-            st.markdown(_action_card("📊", "Governance", "Read-only view of templates, rules, and compliance metrics."), unsafe_allow_html=True)
+            st.markdown(_action_card(
+                "📊", "Governance",
+                "Read-only view of templates, rules, and compliance metrics."
+            ), unsafe_allow_html=True)
             if st.button("Go to Governance →", key="qa_gov2", use_container_width=True):
                 st.session_state["_nav_override"] = "📊 Governance & KPI"
                 st.rerun()
+        with c3:
+            st.markdown(_action_card(
+                "🖥️", "Ops Monitor",
+                "Read-only system health, throughput, and SLA status."
+            ), unsafe_allow_html=True)
+            if st.button("Go to Ops →", key="qa_ops_aud", use_container_width=True):
+                st.session_state["_nav_override"] = "🖥️ Ops Monitor"
+                st.rerun()
 
-    elif role in PLATFORM_ROLES:
-        c1, c2 = st.columns(2)
+    elif role == ROLE_PLATFORM_ADMIN:
+        c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(_action_card("🌐", "Cross-Tenant Overview", "Platform-wide audit, isolation checks, and incident summaries."), unsafe_allow_html=True)
+            st.markdown(_action_card(
+                "🌐", "Cross-Tenant Overview",
+                "Platform-wide audit, tenant isolation checks, and incident summaries."
+            ), unsafe_allow_html=True)
             if st.button("Go to Governance →", key="qa_plat", use_container_width=True):
                 st.session_state["_nav_override"] = "📊 Governance & KPI"
                 st.rerun()
         with c2:
-            st.markdown(_action_card("🖥️", "Platform Ops", "Multi-tenant health, throughput, and DR status."), unsafe_allow_html=True)
+            st.markdown(_action_card(
+                "🖥️", "Platform Ops",
+                "Multi-tenant health, throughput, and DR status."
+            ), unsafe_allow_html=True)
             if st.button("Go to Ops →", key="qa_plat_ops", use_container_width=True):
                 st.session_state["_nav_override"] = "🖥️ Ops Monitor"
+                st.rerun()
+        with c3:
+            st.markdown(_action_card(
+                "🔗", "Integrations",
+                "API keys, webhooks, and batch export across tenants."
+            ), unsafe_allow_html=True)
+            if st.button("Go to Integrations →", key="qa_plat_int", use_container_width=True):
+                st.session_state["_nav_override"] = "🔗 Integrations"
                 st.rerun()
 
     # ── Recent activity + documents ───────────────────────────────────────────
@@ -1172,8 +1200,8 @@ def _render_review_workbench(
         st.markdown(f"**Submitted By:** `{submitted_by.get('actor_id', '—')}`")
         st.markdown(f"**Received At:** `{ingestion.get('received_at', '—')}`")
 
-        reviewer_notes = st.text_area(
-            "Reviewer Notes",
+        verifier_notes = st.text_area(
+            "Verifier Notes",
             placeholder="Required for Reject and Return to Citizen",
             height=90,
             key=f"wb_notes_{doc_id}",
@@ -1202,8 +1230,8 @@ def _render_review_workbench(
                     st.error(str(exc))
 
             if st.button("❌ Reject", use_container_width=True, key=f"wb_reject_{doc_id}", disabled=not decision_allowed):
-                if not reviewer_notes.strip():
-                    st.error("Reviewer notes are required for rejection.")
+                if not verifier_notes.strip():
+                    st.error("Verifier notes are required for rejection.")
                 else:
                     try:
                         out = service.manual_decision(
@@ -1211,7 +1239,7 @@ def _render_review_workbench(
                             "REJECT",
                             tenant_id,
                             officer_id,
-                            reason=f"REJECTED:{reviewer_notes.strip()[:120]}",
+                            reason=f"REJECTED:{verifier_notes.strip()[:120]}",
                         )
                         st.markdown(f'<div class="alert-warn">❌ {out.get("decision")} · {out.get("state")}</div>', unsafe_allow_html=True)
                         st.rerun()
@@ -1224,7 +1252,7 @@ def _render_review_workbench(
                         document_id=doc_id,
                         tenant_id=tenant_id,
                         officer_id=officer_id,
-                        reason=reviewer_notes.strip() or "REVIEW_ESCALATION",
+                        reason=verifier_notes.strip() or "REVIEW_ESCALATION",
                     )
                     st.markdown(
                         f'<div class="alert-warn">Escalated: <code>{res["escalation"].get("id")}</code></div>',
@@ -1234,8 +1262,8 @@ def _render_review_workbench(
                     st.error(str(exc))
 
             if st.button("↩️ Return to Citizen", use_container_width=True, key=f"wb_return_{doc_id}", disabled=not decision_allowed):
-                if not reviewer_notes.strip():
-                    st.error("Reviewer notes are required to return to citizen.")
+                if not verifier_notes.strip():
+                    st.error("Verifier notes are required to return to citizen.")
                 else:
                     try:
                         out = service.manual_decision(
@@ -1243,7 +1271,7 @@ def _render_review_workbench(
                             "REJECT",
                             tenant_id,
                             officer_id,
-                            reason=f"RETURNED_TO_CITIZEN:{reviewer_notes.strip()[:120]}",
+                            reason=f"RETURNED_TO_CITIZEN:{verifier_notes.strip()[:120]}",
                         )
                         try:
                             service.notify(doc_id, tenant_id, officer_id)
@@ -1304,7 +1332,7 @@ def _render_dispute_desk(*, role: str, tenant_id: str, officer_id: str, selected
     except Exception as exc:
         st.error(str(exc))
 
-    if selected_doc and (role in WRITE_ROLES or role in REVIEW_ROLES):
+    if selected_doc and role in WRITE_ROLES:
         _section("Open Dispute")
         with st.form("dispute_form"):
             reason = st.text_input("Reason", value="Citizen requests re-verification")
@@ -1316,7 +1344,7 @@ def _render_dispute_desk(*, role: str, tenant_id: str, officer_id: str, selected
                 except Exception as exc:
                     st.error(str(exc))
 
-    if role in SENIOR_REVIEW_ROLES and selected_doc:
+    if role in SENIOR_ROLES and selected_doc:
         _section("🎖️ Senior Resolution")
         ireason = st.text_input("Disagreement reason", value="Officer assessments conflict", key="disp_ir")
         if st.button("🚨 Flag Disagreement", use_container_width=True):
@@ -1512,6 +1540,13 @@ def _render_audit_trail(*, tenant_id: str, officer_id: str, selected_doc: dict[s
 
 def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> None:
     _render_journey("Governance Cycle", ["Review", "KPI Assessment", "Policy Update", "Sign-off"], active_index=0)
+    is_read_only = role in AUDIT_ROLES and role not in SENIOR_ROLES
+    if is_read_only:
+        st.markdown(
+            '<div class="alert-info">🔎 Read-only mode. '
+            'You can view all governance data but cannot make changes.</div>',
+            unsafe_allow_html=True,
+        )
 
     gk1, gk2, gk3, gk4 = st.tabs(["📈 KPIs", "📜 Policy", "🗂️ Templates & Rules", "👥 Users"])
 
@@ -1534,7 +1569,7 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
         except Exception as exc:
             st.error(str(exc))
 
-        if role in ADMIN_ROLES:
+        if role in SENIOR_ROLES and not is_read_only:
             _section("Record KPI")
             with st.form("kpi_snap"):
                 k1, k2 = st.columns(2)
@@ -1552,8 +1587,11 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
                         st.error(str(exc))
 
     with gk2:
-        if role not in ADMIN_ROLES:
-            st.info("🔒 Admin role required.")
+        if role not in SENIOR_ROLES:
+            _section("Data Retention (Read-Only)")
+            st.json(governance.get_tenant_governance_snapshot(tenant_id, officer_id).get("data_policy", {}))
+            _section("Partition Config (Read-Only)")
+            st.json(governance.get_tenant_governance_snapshot(tenant_id, officer_id).get("partition_config", {}))
         else:
             _section("Data Retention")
             with st.form("policy_form"):
@@ -1588,7 +1626,7 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
                         st.error(str(exc))
 
     with gk3:
-        if role not in ADMIN_ROLES:
+        if role not in SENIOR_ROLES:
             st.write({"templates": service.repo.list_tenant_templates(tenant_id), "rules": service.repo.list_tenant_rules(tenant_id)})
         else:
             _section("Templates")
@@ -1654,8 +1692,16 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
                     st.error(str(exc))
 
     with gk4:
-        if role not in ADMIN_ROLES:
-            st.info("🔒 Admin required.")
+        if role not in SENIOR_ROLES:
+            _section("Officers (Read-Only)")
+            try:
+                officers = service.list_officers(tenant_id, officer_id)
+                if officers:
+                    st.dataframe(pd.DataFrame(officers), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No officers configured.")
+            except Exception as exc:
+                st.error(str(exc))
         else:
             _section("Officers")
             try:
@@ -1668,7 +1714,11 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
                 o1, o2 = st.columns(2)
                 with o1:
                     oid = st.text_input("Officer ID", value="officer-new-001")
-                    orole = st.selectbox("Role", [ROLE_OPERATOR, ROLE_OFFICER, ROLE_SENIOR_OFFICER, ROLE_ADMIN, ROLE_AUDITOR])
+                    orole = st.selectbox(
+                        "Role",
+                        [ROLE_VERIFIER, ROLE_SENIOR_VERIFIER, ROLE_AUDITOR, ROLE_PLATFORM_ADMIN],
+                        format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
+                    )
                 with o2:
                     ost = st.selectbox("Status", ["ACTIVE", "INACTIVE"])
                 if st.form_submit_button("💾 Save", use_container_width=True):
@@ -1692,6 +1742,14 @@ def _render_governance_kpi(*, role: str, tenant_id: str, officer_id: str) -> Non
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _render_ops_monitor(*, role: str, tenant_id: str, officer_id: str) -> None:
+    is_read_only = role in AUDIT_ROLES and role not in SENIOR_ROLES
+    if is_read_only:
+        st.markdown(
+            '<div class="alert-info">🔎 Read-only mode. '
+            "You can view operational metrics but cannot trigger actions.</div>",
+            unsafe_allow_html=True,
+        )
+
     try:
         dashboard = service.monitoring_dashboard(tenant_id, officer_id)
         mlops = dashboard.get("mlops") or {}
@@ -1742,7 +1800,7 @@ def _render_ops_monitor(*, role: str, tenant_id: str, officer_id: str) -> None:
             st.error(str(exc))
 
     with ot3:
-        if role in ADMIN_ROLES or role in REVIEW_ROLES:
+        if role in SENIOR_ROLES and not is_read_only:
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("⏰ Enforce SLA", use_container_width=True):
@@ -1757,6 +1815,8 @@ def _render_ops_monitor(*, role: str, tenant_id: str, officer_id: str) -> None:
                         st.success(str(service.apply_retention_lifecycle(tenant_id, officer_id)))
                     except Exception as exc:
                         st.error(str(exc))
+        else:
+            st.caption("Action controls are disabled for your role.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1777,7 +1837,7 @@ def _render_integrations(*, role: str, tenant_id: str, officer_id: str) -> None:
         ]
         st.dataframe(pd.DataFrame(endpoints), use_container_width=True, hide_index=True)
 
-        if role in ADMIN_ROLES:
+        if role in SENIOR_ROLES:
             _section("API Key")
             with st.form("api_key"):
                 a1, a2 = st.columns(2)
@@ -1803,7 +1863,7 @@ def _render_integrations(*, role: str, tenant_id: str, officer_id: str) -> None:
             st.error(str(exc))
 
     with it3:
-        if role in REVIEW_ROLES or role in ADMIN_ROLES:
+        if role in SENIOR_ROLES:
             raw = st.checkbox("Include raw text", False)
             if st.button("📦 Generate CSV", use_container_width=True):
                 try:
@@ -1890,6 +1950,13 @@ def _render_offline_sync(*, role: str, tenant_id: str, officer_id: str) -> None:
 def _render_ml_training(*, role: str, tenant_id: str, officer_id: str) -> None:
     _render_journey("Learning Loop", ["Correction", "Gate", "QA", "Approved", "Retrain", "Deploy"], active_index=0)
     st.caption("Officer corrections feed into ML training through a QA gate.")
+    is_read_only = role in AUDIT_ROLES and role not in SENIOR_ROLES
+    if is_read_only:
+        st.markdown(
+            '<div class="alert-info">🔎 Read-only mode. '
+            "You can view ML metrics and QA queues but cannot change training config.</div>",
+            unsafe_allow_html=True,
+        )
 
     mt1, mt2, mt3 = st.tabs(["🔍 Gate Queue", "📊 Performance", "⚙️ Config"])
 
@@ -1958,7 +2025,7 @@ def _render_ml_training(*, role: str, tenant_id: str, officer_id: str) -> None:
         except Exception as exc:
             st.error(str(exc))
 
-        if role in ADMIN_ROLES:
+        if role in SENIOR_ROLES and not is_read_only:
             _section("Pipeline Config")
             st.markdown(
                 "- **Gate threshold**: Per rule set in Governance → Rules\n"
@@ -1977,7 +2044,12 @@ def main() -> None:
     with st.sidebar:
         st.markdown("### 🔐 Access")
         tenant_id = st.text_input("Tenant", value="dept-education").strip()
-        role = st.selectbox("Role", ALL_ROLES, index=0)
+        role = st.selectbox(
+            "Role",
+            ALL_ROLES,
+            index=0,
+            format_func=lambda r: ROLE_META.get(r, {}).get("label", r),
+        )
         officer_id = st.text_input("Officer ID", value="officer-001").strip()
 
         meta = ROLE_META.get(role, {"icon": "👤", "label": role, "color": "#90a4ae"})

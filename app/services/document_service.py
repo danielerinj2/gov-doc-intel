@@ -57,7 +57,13 @@ from app.domain.states import DocumentState
 from app.events.backends import build_event_bus
 from app.events.contracts import BRANCH_MODULES, build_event_envelope
 from app.infra.groq_adapter import GroqAdapter
-from app.infra.repositories import ADMIN_ROLES, REVIEW_ROLES, ROLE_OPERATOR, WRITER_ROLES, Repository
+from app.infra.repositories import (
+    ADMIN_ROLES,
+    REVIEW_ROLES,
+    ROLE_VERIFIER,
+    WRITER_ROLES,
+    Repository,
+)
 from app.pipeline.dag import DAG, Node
 from app.pipeline.level2_modules import (
     ExplainabilityAuditModule,
@@ -1011,7 +1017,7 @@ class DocumentService:
 
             overdue_days = age_days - sla_days
             level = min(3, 1 + (overdue_days // step_days))
-            assignee_role = "case_worker" if level == 1 else "reviewer" if level == 2 else "admin"
+            assignee_role = "verifier" if level <= 2 else "senior_verifier"
             reason = f"WAITING_FOR_REVIEW exceeds SLA by {overdue_days} day(s)"
 
             row = self.repo.create_review_escalation(
@@ -1234,10 +1240,10 @@ class DocumentService:
         try:
             existing = self.repo.get_officer(system_actor_id)
             if not existing:
-                self.register_officer(system_actor_id, tenant_id, ROLE_OPERATOR)
+                self.register_officer(system_actor_id, tenant_id, ROLE_VERIFIER)
         except Exception:
             # Best effort for local/demo mode.
-            self.register_officer(system_actor_id, tenant_id, ROLE_OPERATOR)
+            self.register_officer(system_actor_id, tenant_id, ROLE_VERIFIER)
 
         payload = dict(metadata or {})
         payload.setdefault("source", "ONLINE_PORTAL")
@@ -1287,7 +1293,7 @@ class DocumentService:
         system_actor_id = f"citizen-dispute-{tenant_id}"
         existing = self.repo.get_officer(system_actor_id)
         if not existing:
-            self.register_officer(system_actor_id, tenant_id, ROLE_OPERATOR)
+            self.register_officer(system_actor_id, tenant_id, ROLE_VERIFIER)
 
         return self.open_dispute(
             document_id=document_id,

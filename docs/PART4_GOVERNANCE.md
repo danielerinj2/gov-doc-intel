@@ -8,18 +8,14 @@
 
 ## Role Model
 Tenant-scoped roles:
-- `tenant_operator`
-- `tenant_officer`
-- `tenant_senior_officer`
-- `tenant_admin`
-- `tenant_auditor`
+- `verifier`
+- `senior_verifier`
+- `auditor`
 
-Backward-compatible legacy roles are still accepted:
-- `case_worker`, `reviewer`, `admin`, `auditor`
+Platform-scoped role:
+- `platform_admin`
 
-Platform roles (cross-tenant, controlled):
-- `platform_super_admin`
-- `platform_auditor`
+Legacy aliases are no longer accepted.
 
 ## Department Partitioning Model
 Configured via `tenant_partition_configs`:

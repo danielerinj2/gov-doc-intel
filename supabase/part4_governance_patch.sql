@@ -4,15 +4,15 @@
 alter table if exists public.officers drop constraint if exists officers_role_check;
 alter table if exists public.officers add constraint officers_role_check check (
     role in (
-        'case_worker',
-        'reviewer',
-        'admin',
+        'verifier',
+        'verifier',
+        'senior_verifier',
         'auditor',
-        'tenant_operator',
-        'tenant_officer',
-        'tenant_senior_officer',
-        'tenant_admin',
-        'tenant_auditor'
+        'verifier',
+        'verifier',
+        'senior_verifier',
+        'senior_verifier',
+        'auditor'
     )
 );
 
@@ -41,7 +41,7 @@ create table if not exists public.tenant_partition_configs (
 create table if not exists public.platform_access_grants (
     id uuid primary key default gen_random_uuid(),
     actor_id text not null,
-    platform_role text not null check (platform_role in ('platform_super_admin', 'platform_auditor')),
+    platform_role text not null check (platform_role in ('platform_admin', 'platform_admin')),
     justification text not null,
     approved_by text not null,
     status text not null default 'ACTIVE' check (status in ('ACTIVE', 'REVOKED', 'EXPIRED')),
