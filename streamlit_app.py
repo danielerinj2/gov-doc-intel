@@ -1077,7 +1077,8 @@ def _render_review_workbench(
         key="review_doc_picker",
     )
     if picked_doc_id and picked_doc_id != current_doc_id:
-        st.session_state["selected_doc_id"] = picked_doc_id
+        # Avoid mutating a widget-bound key in the same run.
+        st.session_state["_selected_doc_id_override"] = picked_doc_id
         st.rerun()
 
     if current_doc_id and (not selected_doc or str(selected_doc.get("id")) != current_doc_id):
@@ -2548,6 +2549,11 @@ def main() -> None:
         return
     tenant_id, role, officer_id = access
 
+    # Apply deferred review-page document selection before sidebar widgets initialize.
+    pending_doc_override = str(st.session_state.pop("_selected_doc_id_override", "") or "")
+    if pending_doc_override:
+        st.session_state["selected_doc_id"] = pending_doc_override
+
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("### 🔐 Access")
@@ -2561,6 +2567,11 @@ def main() -> None:
         if st.session_state.get(AUTH_EMAIL_KEY):
             st.caption(f"Signed in as `{st.session_state[AUTH_EMAIL_KEY]}`")
         st.caption(f"Officer ID: `{officer_id}`")
+
+        st.markdown("#### 👥 Profiles")
+        for r in ALL_ROLES:
+            rmeta = ROLE_META.get(r, {"label": r})
+            st.caption(f"{rmeta.get('icon', '👤')} {rmeta.get('label', r)}")
 
         if st.button("🚪 Sign Out", use_container_width=True):
             try:
