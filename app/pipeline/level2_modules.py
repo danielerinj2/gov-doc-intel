@@ -41,11 +41,15 @@ class OCRPreprocessingModule:
         raw_text: str,
         source_path: str | None = None,
         script_hint: str | None = None,
+        fast_mode: bool = False,
+        ocr_budget_seconds: float | None = None,
     ) -> dict[str, Any]:
         recognized = self.ocr_adapter.recognize(
             text_fallback=raw_text,
             source_path=source_path,
             script_hint=script_hint,
+            fast_mode=fast_mode,
+            max_seconds=ocr_budget_seconds,
         )
         normalized = " ".join(str(recognized.get("text", "")).split())
         dedup_hash = hashlib.sha256(normalized.lower().encode("utf-8")).hexdigest()
@@ -71,6 +75,8 @@ class OCRPreprocessingModule:
             "is_handwriting_heavy": is_handwriting_heavy,
             "phase1_handwriting_policy": "HANDWRITING_TO_UNSTRUCTURED_REVIEW",
             "ocr_recognition_confidence": recognized.get("confidence", 0.0),
+            "ocr_timed_out": bool(recognized.get("timed_out", False)),
+            "ocr_latency_ms": float(recognized.get("latency_ms", 0.0)),
             "source_path": source_path,
         }
 

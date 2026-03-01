@@ -435,30 +435,9 @@ def _read_uploaded_document(uploaded_file: Any, script_hint: str | None = None) 
             raw_text = "\n".join((p.extract_text() or "") for p in reader.pages[:10]).strip()
         except Exception:
             pass
-        if not raw_text:
-            try:
-                from app.infra.ocr_adapter import OCRAdapter
-
-                recognized = OCRAdapter().recognize(
-                    text_fallback="",
-                    source_path=tmp_path,
-                    script_hint=script_hint,
-                )
-                raw_text = str(recognized.get("text", "") or "").strip()
-            except Exception:
-                pass
     elif suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
-        try:
-            from app.infra.ocr_adapter import OCRAdapter
-
-            recognized = OCRAdapter().recognize(
-                text_fallback="",
-                source_path=tmp_path,
-                script_hint=script_hint,
-            )
-            raw_text = str(recognized.get("text", "") or "").strip()
-        except Exception:
-            pass
+        # Defer OCR to processing stage to avoid duplicate work and keep intake submit fast.
+        raw_text = ""
     return raw_text, tmp_path
 
 
@@ -858,7 +837,7 @@ def _render_intake_processing(
                 )
 
             submit_process = st.form_submit_button(
-                "⚡ Submit & Process",
+                "⚡ Submit & Quick Scan (≤3s)",
                 disabled=not can_write,
                 use_container_width=True,
             )
@@ -878,7 +857,7 @@ def _render_intake_processing(
                     st.session_state["portal_fallback_file"] = file_sig
                     st.warning(
                         "No immediate text was extracted from upload. "
-                        "Proceeding with full pipeline OCR from source file."
+                        "Proceeding with fast OCR scan from source file."
                     )
 
                 st.session_state["portal_fallback_required"] = False
@@ -911,10 +890,20 @@ def _render_intake_processing(
                         file_name=file_name, raw_text=final_raw_text,
                         officer_id=officer_id, metadata=metadata,
                     )
-                    processed = service.process_document(str(created_doc["id"]), tenant_id, officer_id)
+                    processed = service.process_document(
+                        str(created_doc["id"]),
+                        tenant_id,
+                        officer_id,
+                        fast_scan=True,
+                        max_latency_seconds=3.0,
+                    )
+                    quick_scan_meta = ((processed.get("derived") or {}).get("quick_scan") or {})
+                    elapsed = quick_scan_meta.get("elapsed_ms")
+                    elapsed_note = f" · {elapsed} ms" if elapsed is not None else ""
                     st.markdown(
-                        f'<div class="alert-success">✅ Created & processed '
-                        f'<code>{processed["id"]}</code> → <strong>{processed.get("state")}</strong></div>',
+                        f'<div class="alert-success">✅ Quick scan completed '
+                        f'<code>{processed["id"]}</code> → <strong>{processed.get("state")}</strong> '
+                        f'(target: ≤3s{elapsed_note})</div>',
                         unsafe_allow_html=True,
                     )
                 except Exception as exc:
@@ -940,7 +929,7 @@ def _render_intake_processing(
             with bc1:
                 save_only = st.form_submit_button("💾 Save", disabled=not can_write, use_container_width=True)
             with bc2:
-                process_now = st.form_submit_button("⚡ Save + Process", disabled=not can_write, use_container_width=True)
+                process_now = st.form_submit_button("⚡ Save + Quick Scan (≤3s)", disabled=not can_write, use_container_width=True)
             with bc3:
                 save_offline = st.form_submit_button("📴 Offline Provisional", disabled=not can_write, use_container_width=True)
 
@@ -974,8 +963,22 @@ def _render_intake_processing(
                         officer_id=officer_id, metadata=metadata_sc,
                     )
                     if process_now:
-                        processed = service.process_document(str(created_doc["id"]), tenant_id, officer_id)
-                        st.markdown(f'<div class="alert-success">✅ Processed <code>{processed["id"]}</code> → <strong>{processed.get("state")}</strong></div>', unsafe_allow_html=True)
+                        processed = service.process_document(
+                            str(created_doc["id"]),
+                            tenant_id,
+                            officer_id,
+                            fast_scan=True,
+                            max_latency_seconds=3.0,
+                        )
+                        quick_scan_meta = ((processed.get("derived") or {}).get("quick_scan") or {})
+                        elapsed = quick_scan_meta.get("elapsed_ms")
+                        elapsed_note = f" · {elapsed} ms" if elapsed is not None else ""
+                        st.markdown(
+                            f'<div class="alert-success">✅ Quick scan completed '
+                            f'<code>{processed["id"]}</code> → <strong>{processed.get("state")}</strong> '
+                            f'(target: ≤3s{elapsed_note})</div>',
+                            unsafe_allow_html=True,
+                        )
                     else:
                         st.markdown(f'<div class="alert-success">✅ Saved: <code>{created_doc["id"]}</code></div>', unsafe_allow_html=True)
             except Exception as exc:

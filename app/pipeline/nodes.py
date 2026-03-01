@@ -36,10 +36,14 @@ class PipelineNodes:
     def preprocessing_hashing(self, ctx: dict[str, Any]) -> dict[str, Any]:
         text = str(ctx.get("raw_text") or "")
         source_path = ctx.get("source_path")
+        fast_scan = bool(ctx.get("fast_scan", False))
+        ocr_budget_seconds = ctx.get("ocr_budget_seconds")
         return self.ocr_module.preprocess(
             text,
             source_path=str(source_path) if source_path else None,
             script_hint=str(ctx.get("script_hint") or "").strip() or None,
+            fast_mode=fast_scan,
+            ocr_budget_seconds=float(ocr_budget_seconds) if ocr_budget_seconds is not None else None,
         )
 
     def ocr_multi_script(self, ctx: dict[str, Any]) -> dict[str, Any]:

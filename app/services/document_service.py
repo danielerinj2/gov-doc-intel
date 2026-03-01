@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.config import settings
 from app.contracts.schemas import (
     CitizenCommEvent,
     CitizenCommunicationRecord,
@@ -393,7 +394,186 @@ class DocumentService:
 
         return row
 
-    def process_document(self, document_id: str, tenant_id: str, officer_id: str) -> dict[str, Any]:
+    def _process_document_fast_scan(
+        self,
+        *,
+        document_id: str,
+        tenant_id: str,
+        officer_id: str,
+        max_latency_seconds: float | None,
+    ) -> dict[str, Any]:
+        self._authorize(officer_id, tenant_id, WRITER_ROLES)
+        doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+        if not doc:
+            raise ValueError("Document not found for tenant")
+
+        job_id = str(uuid4())
+        correlation_id = job_id
+        policy_version = 1
+        model_versions = {
+            "ocr_model_id": "ocr-fast-scan-v1",
+        }
+        budget_seconds = (
+            max(0.5, float(max_latency_seconds))
+            if max_latency_seconds is not None
+            else max(0.5, float(settings.ocr_fast_scan_budget_seconds))
+        )
+        started = time.perf_counter()
+
+        try:
+            self._transition(doc, DocumentState.PREPROCESSING, "SYSTEM", officer_id, "FAST_SCAN_PIPELINE_STARTED")
+
+            seed = {
+                "raw_text": doc.get("raw_text", ""),
+                "source_path": ((doc.get("metadata") or {}).get("ingestion") or {}).get("original_file_uri"),
+                "script_hint": ((doc.get("metadata") or {}).get("ingestion") or {}).get("script_hint"),
+                "tenant_id": tenant_id,
+                "document_id": doc["id"],
+                "repo": self.repo,
+                "fast_scan": True,
+                "ocr_budget_seconds": max(0.2, budget_seconds - 0.4),
+            }
+            preprocess_out = self.nodes.preprocessing_hashing(seed)
+            ocr_out = self.nodes.ocr_multi_script({"preprocessing_hashing": preprocess_out})
+
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="document.preprocessed",
+                payload={
+                    "quality_score": preprocess_out.get("quality_score"),
+                    "dedup_hash": preprocess_out.get("dedup_hash"),
+                    "fast_scan": True,
+                },
+                reason="FAST_SCAN_PREPROCESSING_COMPLETE",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
+
+            self._transition(doc, DocumentState.OCR_COMPLETE, "SYSTEM", officer_id, "FAST_SCAN_OCR_STAGE_COMPLETE")
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="ocr.completed",
+                payload={
+                    "ocr_confidence": ocr_out.get("ocr_confidence"),
+                    "ocr_latency_ms": preprocess_out.get("ocr_latency_ms"),
+                    "ocr_timed_out": preprocess_out.get("ocr_timed_out"),
+                    "fast_scan": True,
+                },
+                reason="FAST_SCAN_OCR_COMPLETE",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
+
+            self._transition(doc, DocumentState.BRANCHED, "SYSTEM", officer_id, "FAST_SCAN_BRANCH_MARKER")
+            self._transition(doc, DocumentState.MERGED, "SYSTEM", officer_id, "FAST_SCAN_MERGE_MARKER")
+            self._transition(doc, DocumentState.WAITING_FOR_REVIEW, "SYSTEM", officer_id, "FAST_SCAN_REVIEW_REQUIRED")
+
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            quick_derived = {
+                "preprocessing_hashing": preprocess_out,
+                "ocr_multi_script": ocr_out,
+                "quick_scan": {
+                    "enabled": True,
+                    "budget_seconds": round(budget_seconds, 3),
+                    "elapsed_ms": round(elapsed_ms, 2),
+                    "within_budget": elapsed_ms <= (budget_seconds * 1000),
+                },
+            }
+
+            assignment = self.review_workload_module.assign(
+                repo=self.repo,
+                tenant_id=tenant_id,
+                document_id=doc["id"],
+                doc_type="UNKNOWN",
+                risk_level="MEDIUM",
+                policy="LEAST_LOADED",
+            )
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="review.assignment.created",
+                payload={
+                    "assignment_id": str(assignment.get("id")),
+                    "queue_name": str(assignment.get("queue_name")),
+                    "policy": str(assignment.get("assignment_policy", "LEAST_LOADED")),
+                    "fast_scan": True,
+                },
+                reason="FAST_SCAN_AUTO_ASSIGNMENT",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
+
+            self._event(
+                document_id=doc["id"],
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="document.flagged.for_review",
+                payload={"reason_codes": ["FAST_SCAN_REVIEW_REQUIRED"]},
+                reason="FAST_SCAN_REVIEW_REQUIRED",
+                policy_version=policy_version,
+                model_versions=model_versions,
+                correlation_id=correlation_id,
+            )
+
+            updated = self.repo.update_document(
+                doc["id"],
+                dedup_hash=preprocess_out.get("dedup_hash"),
+                confidence=float(ocr_out.get("ocr_confidence", 0.0)),
+                risk_score=0.5,
+                decision="REVIEW",
+                state=DocumentState.WAITING_FOR_REVIEW,
+                derived=quick_derived,
+                last_job_id=job_id,
+            )
+            if not updated:
+                raise RuntimeError("Document update failed")
+            return self.repo.get_document(doc["id"], tenant_id=tenant_id) or updated
+        except Exception as exc:
+            safe_doc = self.repo.get_document(document_id, tenant_id=tenant_id)
+            if safe_doc and safe_doc.get("state") != DocumentState.ARCHIVED.value:
+                try:
+                    self._transition(safe_doc, DocumentState.FAILED, "SYSTEM", officer_id, "FAST_SCAN_EXCEPTION")
+                except Exception:
+                    pass
+            self.emit_custom_event(
+                document_id=document_id,
+                tenant_id=tenant_id,
+                actor_type="SYSTEM",
+                actor_id=officer_id,
+                event_type="document.failed",
+                payload={"error": str(exc), "fast_scan": True},
+                reason="FAST_SCAN_EXCEPTION",
+            )
+            raise
+
+    def process_document(
+        self,
+        document_id: str,
+        tenant_id: str,
+        officer_id: str,
+        *,
+        fast_scan: bool = False,
+        max_latency_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if fast_scan:
+            return self._process_document_fast_scan(
+                document_id=document_id,
+                tenant_id=tenant_id,
+                officer_id=officer_id,
+                max_latency_seconds=max_latency_seconds,
+            )
         self._authorize(officer_id, tenant_id, WRITER_ROLES)
         doc = self.repo.get_document(document_id, tenant_id=tenant_id)
         if not doc:

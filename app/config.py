@@ -35,6 +35,8 @@ class Settings:
     issuer_registry_token: str
     ocr_backend: str
     ocr_default_lang: str
+    ocr_fast_scan_budget_seconds: float
+    ocr_fast_max_side_px: int
     authenticity_backend: str
     fraud_calibration_weights: str
 
@@ -69,6 +71,8 @@ def load_settings() -> Settings:
         issuer_registry_token=os.getenv("ISSUER_REGISTRY_TOKEN", "").strip(),
         ocr_backend=os.getenv("OCR_BACKEND", "paddleocr").strip().lower(),
         ocr_default_lang=os.getenv("OCR_DEFAULT_LANG", "eng+hin").strip(),
+        ocr_fast_scan_budget_seconds=float(os.getenv("OCR_FAST_SCAN_BUDGET_SECONDS", "3.0").strip() or 3.0),
+        ocr_fast_max_side_px=int(os.getenv("OCR_FAST_MAX_SIDE_PX", "1280").strip() or 1280),
         authenticity_backend=os.getenv("AUTHENTICITY_BACKEND", "heuristic").strip().lower(),
         fraud_calibration_weights=os.getenv("FRAUD_CALIBRATION_WEIGHTS", "").strip(),
     )

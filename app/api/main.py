@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -172,8 +172,19 @@ def portal_list_documents(citizen_id: str, ctx: dict[str, str] = Depends(_tenant
 
 
 @app.post("/documents/{document_id}/process")
-def process_document(document_id: str, ctx: dict[str, str | None] = Depends(_ctx)) -> dict[str, Any]:
-    return service.process_document(document_id, str(ctx["tenant_id"]), str(ctx["officer_id"]))
+def process_document(
+    document_id: str,
+    mode: str = Query(default="full", pattern="^(full|fast)$"),
+    max_seconds: float = Query(default=3.0, ge=0.5, le=10.0),
+    ctx: dict[str, str | None] = Depends(_ctx),
+) -> dict[str, Any]:
+    return service.process_document(
+        document_id,
+        str(ctx["tenant_id"]),
+        str(ctx["officer_id"]),
+        fast_scan=(mode == "fast"),
+        max_latency_seconds=max_seconds if mode == "fast" else None,
+    )
 
 
 @app.get("/documents/{document_id}/status")
