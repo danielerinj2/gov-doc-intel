@@ -11,7 +11,7 @@ import streamlit as st
 
 from app.config import settings
 from app.infra.email_adapter import GovDocIQEmailAdapter
-from app.infra.supabase_client import get_supabase_client
+from app.infra.supabase_client import get_supabase_client, get_supabase_client_for_key
 from app.infra.repositories import (
     ROLE_AUDITOR,
     ROLE_PLATFORM_ADMIN,
@@ -2076,6 +2076,27 @@ def _password_reset_redirect_default() -> str:
 
 
 def _auth_client() -> tuple[Any | None, str | None]:
+    # Auth works best with anon/publishable keys. Try auth-dedicated candidates first.
+    seen: set[str] = set()
+    errors: list[str] = []
+    for candidate in (
+        str(getattr(settings, "supabase_anon_key", "") or "").strip(),
+        str(getattr(settings, "supabase_key", "") or "").strip(),
+        str(getattr(settings, "supabase_service_key", "") or "").strip(),
+    ):
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        cli, err = get_supabase_client_for_key(candidate)
+        if cli is None:
+            if err:
+                errors.append(err)
+            continue
+        auth = getattr(cli, "auth", None)
+        if auth is not None:
+            return auth, None
+
+    # Fallback to repository/default client wiring.
     client = service.repo.client
     if client is not None:
         auth = getattr(client, "auth", None)
@@ -2084,8 +2105,19 @@ def _auth_client() -> tuple[Any | None, str | None]:
 
     fallback_client, fallback_error = get_supabase_client()
     if fallback_client is None:
-        return None, fallback_error
+        detail = fallback_error or (" | ".join(errors[-2:]) if errors else "unknown")
+        return None, detail
     return getattr(fallback_client, "auth", None), fallback_error
+
+
+def _friendly_auth_error(exc: Exception) -> str:
+    msg = str(exc)
+    if "invalid api key" in msg.lower():
+        return (
+            "Supabase auth key is invalid. Configure `SUPABASE_ANON_KEY` "
+            "(or `SUPABASE_KEY`) in Streamlit secrets."
+        )
+    return msg
 
 
 def _extract_auth_identity(response: Any) -> tuple[str | None, str | None]:
@@ -2234,7 +2266,7 @@ def _render_auth_gate() -> bool:
                     _set_auth_identity(user_id, user_email or email)
                     st.rerun()
             except Exception as exc:
-                st.error(str(exc))
+                st.error(_friendly_auth_error(exc))
 
         with st.expander("Need help signing in?", expanded=False):
             recovery_action = st.selectbox(
@@ -2308,7 +2340,7 @@ def _render_auth_gate() -> bool:
             email_su = st.text_input("Email", value="", placeholder="name@example.com")
             pwd_su = st.text_input("Password", type="password")
             pwd_confirm = st.text_input("Confirm Password", type="password")
-            full_name_su = st.text_input("Name (optional)", value="")
+            full_name_su = st.text_input("Name", value="")
             role_su = st.selectbox(
                 "Role",
                 ALL_ROLES,
@@ -2322,6 +2354,8 @@ def _render_auth_gate() -> bool:
                 st.error("Passwords do not match.")
             elif len(pwd_su) < 8:
                 st.error("Password must be at least 8 characters.")
+            elif not full_name_su.strip():
+                st.error("Name is required.")
             elif not workspace_id:
                 st.error("Workspace is not configured.")
             else:
@@ -2339,7 +2373,7 @@ def _render_auth_gate() -> bool:
                             officer_id=user_id,
                             tenant_id=workspace_id,
                             role=role_su,
-                            display_name=workspace_id,
+                            display_name=full_name_su.strip(),
                         )
                         service.repo.upsert_tenant_membership(
                             user_id=user_id,
@@ -2360,7 +2394,7 @@ def _render_auth_gate() -> bool:
                             st.info(f"Signup confirmation email not sent: {send_result.detail}")
                         st.rerun()
                 except Exception as exc:
-                    st.error(str(exc))
+                    st.error(_friendly_auth_error(exc))
 
     return False
 

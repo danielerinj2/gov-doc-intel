@@ -43,9 +43,9 @@ def _load_create_client() -> tuple[Callable[..., Any] | None, str | None]:
 _CREATE_CLIENT, _CREATE_CLIENT_ERR = _load_create_client()
 
 
-def get_supabase_client() -> tuple[Any | None, str | None]:
-    if not settings.supabase_url or not settings.supabase_key:
-        return None, "SUPABASE_URL or SUPABASE_KEY missing"
+def _build_client(api_key: str) -> tuple[Any | None, str | None]:
+    if not settings.supabase_url or not api_key:
+        return None, "SUPABASE_URL or API key missing"
 
     if not settings.supabase_url_valid():
         return None, "SUPABASE_URL invalid (must look like https://<project-ref>.supabase.co)"
@@ -55,10 +55,32 @@ def get_supabase_client() -> tuple[Any | None, str | None]:
         return None, f"Supabase client import failed: {msg}"
 
     try:
-        client = _CREATE_CLIENT(settings.supabase_url, settings.supabase_key)
+        client = _CREATE_CLIENT(settings.supabase_url, api_key)
         return client, None
     except Exception as exc:  # pragma: no cover
         return None, f"Supabase init failed: {exc}"
+
+
+def get_supabase_client_for_key(api_key: str) -> tuple[Any | None, str | None]:
+    return _build_client(str(api_key or "").strip())
+
+
+def get_supabase_client() -> tuple[Any | None, str | None]:
+    # Persistence path prefers service key, then configured supabase_key, then anon.
+    last_error: str | None = None
+    for candidate in (
+        str(getattr(settings, "supabase_service_key", "") or "").strip(),
+        str(getattr(settings, "supabase_key", "") or "").strip(),
+        str(getattr(settings, "supabase_anon_key", "") or "").strip(),
+    ):
+        if not candidate:
+            continue
+        client, err = _build_client(candidate)
+        if client is not None:
+            return client, None
+        last_error = err
+
+    return None, last_error or "SUPABASE_URL or SUPABASE_KEY missing"
 
 
 def exec_query(query: Any) -> dict[str, Any] | None:
@@ -68,4 +90,3 @@ def exec_query(query: Any) -> dict[str, Any] | None:
         return {"data": data}
     except Exception:
         return None
-

@@ -38,9 +38,26 @@ def _get_streamlit_secret(*keys: str) -> str:
     section_aliases = {
         "supabase": {
             "supabase_url": ["url", "supabase_url"],
-            "supabase_service_key": ["service_key", "service_role_key", "supabase_service_key"],
-            "supabase_key": ["key", "anon_key", "supabase_key", "supabase_anon_key"],
-            "supabase_anon_key": ["anon_key", "key", "supabase_anon_key", "supabase_key"],
+            "supabase_service_key": [
+                "service_key",
+                "service_role_key",
+                "secret_key",
+                "supabase_service_key",
+            ],
+            "supabase_key": [
+                "key",
+                "anon_key",
+                "publishable_key",
+                "supabase_key",
+                "supabase_anon_key",
+            ],
+            "supabase_anon_key": [
+                "anon_key",
+                "publishable_key",
+                "key",
+                "supabase_anon_key",
+                "supabase_key",
+            ],
         },
         "sendgrid": {
             "sendgrid_api_key": ["api_key", "sendgrid_api_key", "sendgrid_key"],
@@ -85,9 +102,25 @@ def _get_config_value(*keys: str, default: str = "") -> str:
 
 def _pick_supabase_key() -> str:
     return (
-        _get_config_value("SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY")
+        _get_config_value("SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY")
         or _get_config_value("SUPABASE_KEY")
-        or _get_config_value("SUPABASE_ANON_KEY")
+        or _get_config_value("SUPABASE_ANON_KEY", "SUPABASE_PUBLISHABLE_KEY")
+    )
+
+
+def _pick_supabase_service_key() -> str:
+    return _get_config_value(
+        "SUPABASE_SERVICE_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_SECRET_KEY",
+    )
+
+
+def _pick_supabase_anon_key() -> str:
+    return _get_config_value(
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_PUBLISHABLE_KEY",
+        "SUPABASE_KEY",
     )
 
 
@@ -117,6 +150,8 @@ class Settings:
     password_reset_redirect_url: str
     supabase_url: str
     supabase_key: str
+    supabase_service_key: str
+    supabase_anon_key: str
     sendgrid_api_key: str
     sendgrid_from_email: str
     groq_api_key: str
@@ -166,6 +201,8 @@ def load_settings() -> Settings:
         ),
         supabase_url=_get_config_value("SUPABASE_URL").rstrip("/"),
         supabase_key=_pick_supabase_key(),
+        supabase_service_key=_pick_supabase_service_key(),
+        supabase_anon_key=_pick_supabase_anon_key(),
         sendgrid_api_key=_pick_sendgrid_api_key(),
         sendgrid_from_email=_pick_sendgrid_from_email(),
         groq_api_key=_get_config_value("GROQ_API_KEY"),
