@@ -415,7 +415,7 @@ def _load_docs(tenant_id: str, officer_id: str, role: str) -> tuple[list[dict[st
         return [], str(exc)
 
 
-def _read_uploaded_document(uploaded_file: Any) -> tuple[str, str | None]:
+def _read_uploaded_document(uploaded_file: Any, script_hint: str | None = None) -> tuple[str, str | None]:
     if uploaded_file is None:
         return "", None
     suffix = Path(str(uploaded_file.name)).suffix or ".bin"
@@ -435,11 +435,27 @@ def _read_uploaded_document(uploaded_file: Any) -> tuple[str, str | None]:
             raw_text = "\n".join((p.extract_text() or "") for p in reader.pages[:10]).strip()
         except Exception:
             pass
+        if not raw_text:
+            try:
+                from app.infra.ocr_adapter import OCRAdapter
+
+                recognized = OCRAdapter().recognize(
+                    text_fallback="",
+                    source_path=tmp_path,
+                    script_hint=script_hint,
+                )
+                raw_text = str(recognized.get("text", "") or "").strip()
+            except Exception:
+                pass
     elif suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
         try:
             from app.infra.ocr_adapter import OCRAdapter
 
-            recognized = OCRAdapter().recognize(text_fallback="", source_path=tmp_path)
+            recognized = OCRAdapter().recognize(
+                text_fallback="",
+                source_path=tmp_path,
+                script_hint=script_hint,
+            )
             raw_text = str(recognized.get("text", "") or "").strip()
         except Exception:
             pass
@@ -827,6 +843,11 @@ def _render_intake_processing(
 
         with st.form("intake_form_online"):
             citizen_id = st.text_input("Citizen ID *", value="citizen-001")
+            scheme_context = st.text_input(
+                "Scheme / Service Context (optional)",
+                value="",
+                help="Example: scholarship, pension, land mutation, welfare scheme.",
+            )
             notes = st.text_area("Notes (optional)", value="", height=55)
             fallback_text = ""
             if fallback_required:
@@ -848,29 +869,17 @@ def _render_intake_processing(
             elif uploaded is None:
                 st.error("Please upload a document.")
             else:
-                upload_text, source_path = _read_uploaded_document(uploaded)
+                upload_text, source_path = _read_uploaded_document(uploaded, script_hint=hint_script)
                 raw_text = (upload_text or "").strip()
                 fallback_clean = (fallback_text or "").strip()
-                suffix = Path(str(uploaded.name)).suffix.lower()
-                is_image_upload = suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-                is_pdf_upload = suffix == ".pdf"
 
                 if not raw_text and not fallback_clean:
-                    # For image/PDF uploads, allow pipeline OCR attempt instead of hard blocking.
-                    if is_image_upload or is_pdf_upload:
-                        st.session_state["portal_fallback_required"] = True
-                        st.session_state["portal_fallback_file"] = file_sig
-                        if settings.ocr_backend == "heuristic":
-                            st.warning(
-                                "No embedded text found. Proceeding with image OCR attempt, "
-                                "but OCR_BACKEND is 'heuristic'. For best results on images, "
-                                "set OCR_BACKEND=tesseract."
-                            )
-                    else:
-                        st.session_state["portal_fallback_required"] = True
-                        st.session_state["portal_fallback_file"] = file_sig
-                        st.error("No extractable text found. Enter fallback text and submit again.")
-                        return
+                    st.session_state["portal_fallback_required"] = True
+                    st.session_state["portal_fallback_file"] = file_sig
+                    st.warning(
+                        "No immediate text was extracted from upload. "
+                        "Proceeding with full pipeline OCR from source file."
+                    )
 
                 st.session_state["portal_fallback_required"] = False
                 st.session_state["portal_fallback_file"] = ""
@@ -888,6 +897,11 @@ def _render_intake_processing(
                     "ingestion": ingestion,
                     "operator_notes": notes.strip() or None,
                 }
+                if scheme_context.strip():
+                    metadata["submission_context"] = {
+                        "scheme": scheme_context.strip(),
+                        "department": tenant_id,
+                    }
 
                 file_name = uploaded.name
 
@@ -933,7 +947,7 @@ def _render_intake_processing(
         if save_only or process_now or save_offline:
             try:
                 metadata_sc = json.loads(center_meta_raw) if center_meta_raw.strip() else {}
-                upload_text, source_path = _read_uploaded_document(sc_uploaded)
+                upload_text, source_path = _read_uploaded_document(sc_uploaded, script_hint=None)
                 raw_text_sc = upload_text or center_fallback or ""
                 final_name_sc = file_name_sc.strip() or (sc_uploaded.name if sc_uploaded else "center_capture")
                 ingestion_sc = dict(metadata_sc.get("ingestion") or {})

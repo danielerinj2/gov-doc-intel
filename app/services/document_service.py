@@ -381,6 +381,9 @@ class DocumentService:
                 {
                     "raw_text": doc.get("raw_text", ""),
                     "source_path": ((doc.get("metadata") or {}).get("ingestion") or {}).get("original_file_uri"),
+                    "script_hint": ((doc.get("metadata") or {}).get("ingestion") or {}).get("script_hint"),
+                    "doc_type_hint": ((doc.get("metadata") or {}).get("ingestion") or {}).get("doc_type_hint"),
+                    "submission_context": (doc.get("metadata") or {}).get("submission_context") or {},
                     "prefilled_data": (doc.get("metadata") or {}).get("prefilled_form_data") or {},
                     "tenant_id": tenant_id,
                     "document_id": doc["id"],
@@ -1212,6 +1215,14 @@ class DocumentService:
             "risk_score",
             "template_id",
             "last_job_id",
+            "doc_type",
+            "validation_status",
+            "issuer_status",
+            "fraud_risk_level",
+            "fraud_signals_json",
+            "extracted_fields_json",
+            "explainability_json",
+            "audit_event_count",
             "created_at",
             "updated_at",
             "expires_at",
@@ -1223,7 +1234,49 @@ class DocumentService:
         writer = csv.DictWriter(buffer, fieldnames=columns)
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: row.get(k) for k in columns})
+            document_id = str(row.get("id", ""))
+            latest_record_row = self.repo.get_latest_document_record(tenant_id, document_id) if document_id else None
+            wrapped = dict((latest_record_row or {}).get("record") or {})
+            record = (
+                dict(wrapped.get("document_record"))
+                if isinstance(wrapped.get("document_record"), dict)
+                else wrapped
+            )
+
+            extraction = dict(record.get("extraction_output") or {})
+            validation = dict(record.get("validation_output") or {})
+            fraud = dict(record.get("fraud_risk_output") or {})
+            issuer = dict(record.get("issuer_verification_output") or {})
+            explainability = dict(record.get("explainability") or {})
+            events = self.repo.list_events(document_id, tenant_id=tenant_id) if document_id else []
+            enriched = dict(row)
+            enriched["doc_type"] = (record.get("classification_output") or {}).get("doc_type")
+            enriched["validation_status"] = validation.get("overall_status")
+            enriched["issuer_status"] = issuer.get("status") or issuer.get("registry_status")
+            enriched["fraud_risk_level"] = fraud.get("risk_level")
+            enriched["fraud_signals_json"] = json.dumps(
+                ((fraud.get("components") or {}).get("image_forensics_component") or {}).get("signals", []),
+                ensure_ascii=False,
+            )
+            extracted_fields = extraction.get("fields")
+            if isinstance(extracted_fields, list):
+                compact_fields = {
+                    str(item.get("field_name", "")): item.get("normalized_value")
+                    for item in extracted_fields
+                    if isinstance(item, dict)
+                }
+            else:
+                compact_fields = extracted_fields if isinstance(extracted_fields, dict) else {}
+            enriched["extracted_fields_json"] = json.dumps(compact_fields, ensure_ascii=False)
+            enriched["explainability_json"] = json.dumps(
+                {
+                    "document_explanations": explainability.get("document_explanations", []),
+                    "field_explanations": explainability.get("field_explanations", []),
+                },
+                ensure_ascii=False,
+            )
+            enriched["audit_event_count"] = len(events)
+            writer.writerow({k: enriched.get(k) for k in columns})
         return buffer.getvalue()
 
     def citizen_submit_document(

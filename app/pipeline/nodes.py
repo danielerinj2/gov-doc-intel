@@ -36,7 +36,11 @@ class PipelineNodes:
     def preprocessing_hashing(self, ctx: dict[str, Any]) -> dict[str, Any]:
         text = str(ctx.get("raw_text") or "")
         source_path = ctx.get("source_path")
-        return self.ocr_module.preprocess(text, source_path=str(source_path) if source_path else None)
+        return self.ocr_module.preprocess(
+            text,
+            source_path=str(source_path) if source_path else None,
+            script_hint=str(ctx.get("script_hint") or "").strip() or None,
+        )
 
     def ocr_multi_script(self, ctx: dict[str, Any]) -> dict[str, Any]:
         return self.ocr_module.ocr(ctx["preprocessing_hashing"])
@@ -68,6 +72,8 @@ class PipelineNodes:
             ocr_out=ctx["ocr_multi_script"],
             preprocess_out=ctx["preprocessing_hashing"],
             groq=self.groq,
+            doc_type_hint=str(ctx.get("doc_type_hint") or "").strip() or None,
+            submission_context=dict(ctx.get("submission_context") or {}),
         )
 
     def stamps_seals(self, ctx: dict[str, Any]) -> dict[str, Any]:

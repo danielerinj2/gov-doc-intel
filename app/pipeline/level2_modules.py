@@ -36,8 +36,17 @@ class OCRPreprocessingModule:
 
     ocr_adapter: OCRAdapter
 
-    def preprocess(self, raw_text: str, source_path: str | None = None) -> dict[str, Any]:
-        recognized = self.ocr_adapter.recognize(text_fallback=raw_text, source_path=source_path)
+    def preprocess(
+        self,
+        raw_text: str,
+        source_path: str | None = None,
+        script_hint: str | None = None,
+    ) -> dict[str, Any]:
+        recognized = self.ocr_adapter.recognize(
+            text_fallback=raw_text,
+            source_path=source_path,
+            script_hint=script_hint,
+        )
         normalized = " ".join(str(recognized.get("text", "")).split())
         dedup_hash = hashlib.sha256(normalized.lower().encode("utf-8")).hexdigest()
         quality_score = round(min(1.0, max(0.2, len(normalized) / 4500)), 3)
@@ -56,6 +65,8 @@ class OCRPreprocessingModule:
             "quality_score": quality_score,
             "steps_applied": ["DESKEW", "DENOISE", "CONTRAST_ENHANCEMENT"],
             "ocr_backend": recognized.get("backend", "heuristic"),
+            "ocr_lang": recognized.get("ocr_lang"),
+            "script_hint": script_hint,
             "handwriting_probability": handwriting_probability,
             "is_handwriting_heavy": is_handwriting_heavy,
             "phase1_handwriting_policy": "HANDWRITING_TO_UNSTRUCTURED_REVIEW",
@@ -105,7 +116,15 @@ class OCRPreprocessingModule:
 class DocumentClassificationModule:
     """Multi-modal classification module (layout/text ensemble simplified for MVP)."""
 
-    def classify(self, *, ocr_out: dict[str, Any], preprocess_out: dict[str, Any], groq: Any) -> dict[str, Any]:
+    def classify(
+        self,
+        *,
+        ocr_out: dict[str, Any],
+        preprocess_out: dict[str, Any],
+        groq: Any,
+        doc_type_hint: str | None = None,
+        submission_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if ocr_out.get("unstructured_due_to_handwriting"):
             return {
                 "document_type": "UNSTRUCTURED",
@@ -117,14 +136,31 @@ class DocumentClassificationModule:
                 "model_metadata": {"model_id": "doc-classifier-v2", "model_version": "2.0.0"},
             }
 
+        normalized_hint = str(doc_type_hint or "").strip().upper()
+        if normalized_hint in {"", "AUTO-DETECT", "AUTO_DETECT"}:
+            normalized_hint = ""
+
         text = str(ocr_out.get("ocr_text", ""))
         base = groq.classify(text)
         confidence = _safe_float(base.get("confidence"), 0.5)
-        doc_type = str(base.get("document_type") or "UNKNOWN").upper()
+        doc_type = str(
+            base.get("document_type")
+            or base.get("doc_type")
+            or "UNKNOWN"
+        ).upper()
+
+        if normalized_hint:
+            doc_type = normalized_hint
+            confidence = max(confidence, 0.9)
 
         reasons = list(base.get("reasons") or [])
         if base.get("reasoning_short"):
             reasons.append(str(base["reasoning_short"]))
+        if normalized_hint:
+            reasons.append("DOC_TYPE_HINT_APPLIED")
+        scheme = str((submission_context or {}).get("scheme") or "").strip()
+        if scheme:
+            reasons.append(f"SCHEME_CONTEXT:{scheme.upper().replace(' ', '_')}")
         if preprocess_out.get("quality_score", 0) < 0.45:
             reasons.append("LOW_IMAGE_QUALITY")
 

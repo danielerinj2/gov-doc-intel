@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import re
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,28 @@ def _detect_script(text: str) -> str:
     return "UNKNOWN"
 
 
+def _lang_from_script_hint(script_hint: str | None, default_lang: str) -> str:
+    if not script_hint:
+        return default_lang
+    key = str(script_hint).strip().lower()
+    if not key or key == "auto-detect":
+        return default_lang
+    mapping = {
+        "devanagari (hindi/marathi/sanskrit)": "hin+eng",
+        "bengali": "ben+eng",
+        "tamil": "tam+eng",
+        "telugu": "tel+eng",
+        "kannada": "kan+eng",
+        "malayalam": "mal+eng",
+        "gujarati": "guj+eng",
+        "gurmukhi (punjabi)": "pan+eng",
+        "odia": "ori+eng",
+        "urdu (nastaliq)": "urd+eng",
+        "latin (english)": "eng",
+    }
+    return mapping.get(key, default_lang)
+
+
 class OCRAdapter:
     """Optional OCR adapter; falls back to provided text when OCR runtime is unavailable."""
 
@@ -28,50 +51,173 @@ class OCRAdapter:
         self.backend = settings.ocr_backend
         self.default_lang = settings.ocr_default_lang
 
-    def recognize(self, *, text_fallback: str, source_path: str | None = None) -> dict[str, Any]:
+    def recognize(
+        self,
+        *,
+        text_fallback: str,
+        source_path: str | None = None,
+        script_hint: str | None = None,
+    ) -> dict[str, Any]:
         text = (text_fallback or "").strip()
         confidence = 0.0 if not text else 0.9
         script = _detect_script(text)
+        ocr_lang = _lang_from_script_hint(script_hint, self.default_lang)
 
         if source_path and Path(source_path).exists() and self.backend in {"tesseract", "easyocr"}:
-            inferred = self._recognize_from_image(source_path)
+            inferred = self._recognize_from_source(source_path, ocr_lang)
             if inferred.get("text"):
                 text = str(inferred["text"])
                 confidence = float(inferred.get("confidence", confidence))
                 script = _detect_script(text)
+                if script == "UNKNOWN" and script_hint and script_hint != "AUTO-DETECT":
+                    script = str(script_hint).split("(", 1)[0].strip().upper().replace(" ", "_")
 
         return {
             "text": text,
             "confidence": round(confidence, 3),
             "script": script,
             "backend": self.backend,
+            "ocr_lang": ocr_lang,
         }
 
-    def _recognize_from_image(self, source_path: str) -> dict[str, Any]:
-        if self.backend == "tesseract":
-            return self._tesseract(source_path)
-        if self.backend == "easyocr":
-            return self._easyocr(source_path)
+    def _recognize_from_source(self, source_path: str, ocr_lang: str) -> dict[str, Any]:
+        suffix = Path(source_path).suffix.lower()
+        if suffix == ".pdf":
+            return self._recognize_from_pdf(source_path, ocr_lang)
+        return self._recognize_from_image(source_path, ocr_lang)
+
+    def _recognize_from_pdf(self, source_path: str, ocr_lang: str) -> dict[str, Any]:
+        try:
+            from pypdf import PdfReader  # type: ignore
+
+            reader = PdfReader(source_path)
+            embedded_text: list[str] = []
+            for page in reader.pages[:5]:
+                chunk = (page.extract_text() or "").strip()
+                if chunk:
+                    embedded_text.append(chunk)
+            if embedded_text:
+                joined = "\n".join(embedded_text).strip()
+                if joined:
+                    return {"text": joined, "confidence": 0.78}
+
+            if self.backend == "tesseract":
+                snippets: list[str] = []
+                confs: list[float] = []
+                for page in reader.pages[:3]:
+                    images = list(getattr(page, "images", []) or [])
+                    for img in images[:2]:
+                        data = getattr(img, "data", None)
+                        if not data and hasattr(img, "get_data"):
+                            data = img.get_data()
+                        if not data:
+                            continue
+                        extracted = self._tesseract_from_image_bytes(data, ocr_lang)
+                        txt = str(extracted.get("text", "")).strip()
+                        if txt:
+                            snippets.append(txt)
+                            confs.append(float(extracted.get("confidence", 0.0)))
+                if snippets:
+                    avg = sum(confs) / max(1, len(confs))
+                    return {"text": "\n".join(snippets), "confidence": max(0.0, min(1.0, avg))}
+        except Exception:
+            return {"text": "", "confidence": 0.0}
         return {"text": "", "confidence": 0.0}
 
-    def _tesseract(self, source_path: str) -> dict[str, Any]:
+    def _recognize_from_image(self, source_path: str, ocr_lang: str) -> dict[str, Any]:
+        if self.backend == "tesseract":
+            return self._tesseract(source_path, ocr_lang)
+        if self.backend == "easyocr":
+            return self._easyocr(source_path, ocr_lang)
+        return {"text": "", "confidence": 0.0}
+
+    def _tesseract_from_image_bytes(self, image_bytes: bytes, ocr_lang: str) -> dict[str, Any]:
         try:
-            import pytesseract  # type: ignore
             from PIL import Image  # type: ignore
 
-            raw = pytesseract.image_to_string(Image.open(source_path), lang=self.default_lang)
-            conf_data = pytesseract.image_to_data(Image.open(source_path), output_type=pytesseract.Output.DICT)
-            conf = [float(c) for c in conf_data.get("conf", []) if str(c).strip() not in {"", "-1"}]
-            avg_conf = (sum(conf) / len(conf) / 100.0) if conf else 0.75
-            return {"text": raw.strip(), "confidence": max(0.0, min(1.0, avg_conf))}
+            image = Image.open(io.BytesIO(image_bytes))
+            return self._tesseract_from_pil(image, ocr_lang)
         except Exception:
             return {"text": "", "confidence": 0.0}
 
-    def _easyocr(self, source_path: str) -> dict[str, Any]:
+    def _tesseract(self, source_path: str, ocr_lang: str) -> dict[str, Any]:
+        try:
+            from PIL import Image  # type: ignore
+
+            image = Image.open(source_path)
+            return self._tesseract_from_pil(image, ocr_lang)
+        except Exception:
+            return {"text": "", "confidence": 0.0}
+
+    def _tesseract_from_pil(self, image: Any, ocr_lang: str) -> dict[str, Any]:
+        try:
+            import pytesseract  # type: ignore
+            from PIL import ImageOps  # type: ignore
+        except Exception:
+            return {"text": "", "confidence": 0.0}
+
+        # Multi-pass OCR with lightweight preprocessing to improve low-quality scans.
+        base = image.convert("RGB")
+        gray = ImageOps.grayscale(base)
+        autocontrast = ImageOps.autocontrast(gray)
+        scaled = autocontrast.resize((max(1, autocontrast.width * 2), max(1, autocontrast.height * 2)))
+        binary = autocontrast.point(lambda p: 255 if p > 150 else 0)
+
+        candidates = [base, gray, autocontrast, scaled, binary]
+        best_text = ""
+        best_conf = 0.0
+        best_score = -1.0
+
+        for img in candidates:
+            for psm in (6, 11):
+                config = f"--oem 1 --psm {psm}"
+                try:
+                    raw = pytesseract.image_to_string(img, lang=ocr_lang, config=config).strip()
+                except Exception:
+                    continue
+                if not raw:
+                    continue
+
+                conf = 0.0
+                try:
+                    conf_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang=ocr_lang, config=config)
+                    confs = [
+                        float(c)
+                        for c in conf_data.get("conf", [])
+                        if str(c).strip() not in {"", "-1"}
+                    ]
+                    conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
+                except Exception:
+                    conf = 0.0
+                conf = max(0.0, min(1.0, conf))
+
+                score = (conf * 0.7) + (min(len(raw), 1600) / 1600.0 * 0.3)
+                if score > best_score:
+                    best_score = score
+                    best_text = raw
+                    best_conf = conf if conf > 0 else max(best_conf, 0.6)
+
+        return {"text": best_text, "confidence": best_conf}
+
+    def _easyocr(self, source_path: str, ocr_lang: str) -> dict[str, Any]:
         try:
             import easyocr  # type: ignore
 
-            reader = easyocr.Reader([self.default_lang], gpu=False)
+            easy_map = {
+                "eng": "en",
+                "hin": "hi",
+                "ben": "bn",
+                "tam": "ta",
+                "tel": "te",
+                "kan": "kn",
+                "mal": "ml",
+                "guj": "gu",
+                "pan": "pa",
+                "ori": "or",
+                "urd": "ur",
+            }
+            langs = [easy_map.get(code, code) for code in ocr_lang.split("+") if code]
+            reader = easyocr.Reader(langs or ["en"], gpu=False)
             out = reader.readtext(source_path)
             if not out:
                 return {"text": "", "confidence": 0.0}
