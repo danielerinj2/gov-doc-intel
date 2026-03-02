@@ -93,6 +93,12 @@ class Settings:
     appwrite_recovery_redirect_url: str = _secret_lookup("APPWRITE_RECOVERY_REDIRECT_URL") or app_login_url
 
     data_dir: str = _secret_lookup("DATA_DIR") or ".data"
+    default_workspace_id: str = (
+        _secret_lookup("DEFAULT_WORKSPACE_ID")
+        or _secret_lookup("TENANT_ID")
+        or _secret_lookup("WORKSPACE_ID")
+        or "workspace-default"
+    )
 
     def supabase_url_valid(self) -> bool:
         return self.supabase_url.startswith("https://") and ".supabase.co" in self.supabase_url

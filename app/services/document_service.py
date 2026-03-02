@@ -30,6 +30,11 @@ class DocumentService:
         self.data_dir = Path(settings.data_dir)
         self.upload_dir = self.data_dir / "uploads"
         self.processed_dir = self.data_dir / "processed"
+        self.default_tenant_id = (
+            settings.default_workspace_id
+            or settings.appwrite_project_id
+            or "workspace-default"
+        )
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
 
@@ -89,6 +94,12 @@ class DocumentService:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         metadata = dict(metadata or {})
+        tenant_id = str(
+            metadata.get("tenant_id")
+            or self.default_tenant_id
+            or "workspace-default"
+        )
+        metadata["tenant_id"] = tenant_id
         file_hash = self._hash_bytes(file_bytes)
         file_path = self._write_upload(file_name=file_name, payload=file_bytes)
 
@@ -108,6 +119,7 @@ class DocumentService:
 
         row = self.repo.create_document(
             {
+                "tenant_id": tenant_id,
                 "citizen_id": citizen_id,
                 "file_name": file_name,
                 "file_path": file_path,
@@ -134,6 +146,7 @@ class DocumentService:
             actor_role=role,
             event_type="document.ingested",
             payload={"file_name": file_name, "citizen_id": citizen_id, "source": source},
+            tenant_id=tenant_id,
         )
         return row
 
@@ -225,6 +238,7 @@ class DocumentService:
                 "confidence": conf,
                 "risk_score": updated.get("risk_score"),
             },
+            tenant_id=str(doc.get("tenant_id") or self.default_tenant_id),
         )
         return updated
 
@@ -270,6 +284,7 @@ class DocumentService:
             actor_role=role,
             event_type="document.fields_corrected",
             payload={"reason": reason, "fields": fields},
+            tenant_id=str(doc.get("tenant_id") or self.default_tenant_id),
         )
         return updated
 
@@ -300,6 +315,7 @@ class DocumentService:
 
         self.repo.create_review(
             {
+                "tenant_id": str(row.get("tenant_id") or self.default_tenant_id),
                 "document_id": document_id,
                 "actor_id": actor_id,
                 "actor_role": role,
@@ -319,6 +335,7 @@ class DocumentService:
             actor_role=role,
             event_type="document.review_decision",
             payload={"decision": dec, "state": state, "notes": notes},
+            tenant_id=str(row.get("tenant_id") or self.default_tenant_id),
         )
         return row
 
@@ -330,16 +347,18 @@ class DocumentService:
         actor_role: str,
         event_type: str,
         payload: dict[str, Any],
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
-        return self.repo.create_audit_event(
-            {
-                "document_id": document_id,
-                "actor_id": actor_id,
-                "actor_role": actor_role,
-                "event_type": event_type,
-                "payload": payload,
-            }
-        )
+        row: dict[str, Any] = {
+            "document_id": document_id,
+            "actor_id": actor_id,
+            "actor_role": actor_role,
+            "event_type": event_type,
+            "payload": payload,
+        }
+        if tenant_id:
+            row["tenant_id"] = tenant_id
+        return self.repo.create_audit_event(row)
 
     def list_documents(self, limit: int = 500) -> list[dict[str, Any]]:
         return self.repo.list_documents(limit=limit)
