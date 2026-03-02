@@ -5,7 +5,7 @@ GovDocIQ is an MVP for government document digitization and verification:
 - Ingestion: upload + preview + basic file validation
 - Preprocessing: deskew, resize, contrast enhancement
 - Classification: hybrid keyword/layout heuristic for 3 doc types
-- OCR: PaddleOCR primary (v5 `predict` API supported, fallback-safe)
+- OCR: Tesseract fallback by default; PaddleOCR optional (`requirements-paddle.txt`)
 - Field extraction: template-style regex extraction
 - Validation: regex + basic cross-field checks
 - Fraud signals: stamp/signature presence + layout consistency
@@ -17,6 +17,12 @@ GovDocIQ is an MVP for government document digitization and verification:
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
+```
+
+Optional (PaddleOCR acceleration where supported):
+
+```bash
+pip install -r requirements-paddle.txt
 ```
 
 ## Supabase
