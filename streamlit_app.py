@@ -294,7 +294,7 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
 
 
 def _render_structured_fields(service: DocumentService, actor_id: str, role: str) -> None:
-    st.markdown("### 3) Structured Document Fields")
+    st.markdown("### 3) Document Classification")
     docs = service.list_documents(limit=500)
     if not docs:
         st.info("No processed documents yet. Upload and process a document first.")
@@ -338,14 +338,21 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
     doc_id = str(selected_doc.get("id"))
     st.session_state["review_doc_target_id"] = doc_id
 
+    cls = selected_doc.get("classification_output") or {}
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("State", selected_doc.get("state", "UNKNOWN"))
-    c2.metric("Decision", selected_doc.get("decision") or "PENDING")
-    c3.metric("Confidence", f"{float(selected_doc.get('confidence') or 0.0):.2f}")
+    c1.metric("Detected Type", cls.get("doc_type", "OTHER"))
+    c2.metric("Classification Conf.", f"{float(cls.get('confidence') or 0.0):.2f}")
+    c3.metric("Pipeline Confidence", f"{float(selected_doc.get('confidence') or 0.0):.2f}")
     c4.metric("Risk", f"{float(selected_doc.get('risk_score') or 0.0):.2f}")
 
-    ocr_text = str(selected_doc.get("ocr_text") or selected_doc.get("raw_text") or "")
-    st.text_area("OCR Text (selected document)", value=ocr_text, height=180, disabled=True, key=f"workspace_ocr_{doc_id}")
+    if cls:
+        with st.expander("Classification details", expanded=False):
+            st.json(cls)
+
+    st.markdown("### 4) Extracted Structured Fields")
+    s1, s2 = st.columns(2)
+    s1.metric("State", selected_doc.get("state", "UNKNOWN"))
+    s2.metric("Decision", selected_doc.get("decision") or "PENDING")
 
     fields = (selected_doc.get("extraction_output") or {}).get("fields") or [
         {"field_name": "", "normalized_value": "", "confidence": 0.0}
