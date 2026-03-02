@@ -302,8 +302,8 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
                 ocr_engine = str(processed.get("ocr_engine") or "")
                 if ocr_engine.startswith("paddle-unavailable:"):
                     st.error(
-                        "OCR engine is unavailable in this runtime. Install OCR dependencies "
-                        "(paddleocr + paddlepaddle) and restart."
+                        "OCR engine is unavailable for this runtime/file. "
+                        "Enable PaddleOCR, or ensure Tesseract + PDF raster support are installed."
                     )
             except Exception as exc:
                 st.error(str(exc))
@@ -317,7 +317,7 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
         else:
             st.warning("OCR returned empty text for this file. Try a clearer scan/image or re-run processing.")
         if st.button("Open In Review Workbench", use_container_width=True):
-            st.session_state["nav_page"] = "🔍 Review Workbench"
+            st.session_state["_pending_nav_page"] = "🔍 Review Workbench"
             st.session_state["review_doc_target_id"] = str(last_processed.get("id") or "")
             st.rerun()
 
@@ -365,7 +365,10 @@ def _render_review(service: DocumentService, actor_id: str, role: str) -> None:
             st.image(file_path, caption=selected_doc.get("file_name") or "uploaded", use_container_width=True)
         st.text_area("OCR Text", value=str(selected_doc.get("ocr_text") or selected_doc.get("raw_text") or ""), height=220)
         if str(selected_doc.get("ocr_engine") or "").startswith("paddle-unavailable:"):
-            st.error("OCR dependencies are missing in this runtime. Install OCR packages and restart.")
+            st.error(
+                "OCR dependencies are unavailable for this runtime/file. "
+                "Enable PaddleOCR, or ensure Tesseract + PDF raster support are installed."
+            )
 
         cls = selected_doc.get("classification_output") or {}
         val = selected_doc.get("validation_output") or {}
@@ -506,6 +509,9 @@ def main() -> None:
         st.session_state["active_profile"] = active_profile
 
         actor_id = str(user.get("user_id") or user_email or "user-001")
+        pending_nav = st.session_state.pop("_pending_nav_page", None)
+        if pending_nav in PAGES:
+            st.session_state["nav_page"] = pending_nav
         if "nav_page" not in st.session_state or st.session_state["nav_page"] not in PAGES:
             st.session_state["nav_page"] = PAGES[0]
         st.radio("Navigation", PAGES, key="nav_page")

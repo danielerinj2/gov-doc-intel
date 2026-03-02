@@ -16,6 +16,11 @@ except Exception:  # pragma: no cover
     PdfReader = None  # type: ignore[assignment]
 
 try:
+    import pypdfium2 as pdfium
+except Exception:  # pragma: no cover
+    pdfium = None  # type: ignore[assignment]
+
+try:
     import pytesseract
 except Exception:  # pragma: no cover
     pytesseract = None  # type: ignore[assignment]
@@ -133,6 +138,26 @@ class OCRAdapter:
 
         try:
             image = Image.open(file_path).convert("RGB")
+            words, bbox, conf = self._extract_tesseract_tokens(image=image, lang=lang)
+            text = " ".join(words).strip()
+            avg = (sum(conf) / len(conf)) if conf else 0.0
+            return OCRResult(
+                text=text,
+                confidence=float(avg),
+                engine="tesseract",
+                language=lang,
+                words=words,
+                bbox=bbox,
+                line_confidence=conf,
+            )
+        except Exception:
+            return self._empty("tesseract", lang)
+
+    def _extract_tesseract_tokens(self, image: Image.Image, lang: str) -> tuple[list[str], list[list[float]], list[float]]:
+        if pytesseract is None:
+            return [], [], []
+
+        try:
             data = pytesseract.image_to_data(
                 image,
                 output_type=pytesseract.Output.DICT,
@@ -161,20 +186,62 @@ class OCRAdapter:
                 words.append(txt)
                 bbox.append([left, top, left + width, top + height])
                 conf.append(max(0.0, sc / 100.0))
-
-            text = " ".join(words).strip()
-            avg = (sum(conf) / len(conf)) if conf else 0.0
-            return OCRResult(
-                text=text,
-                confidence=float(avg),
-                engine="tesseract",
-                language=lang,
-                words=words,
-                bbox=bbox,
-                line_confidence=conf,
-            )
         except Exception:
-            return self._empty("tesseract", lang)
+            return [], [], []
+        return words, bbox, conf
+
+    def _extract_pdf_with_tesseract(self, file_path: str, hint_script: str = "AUTO-DETECT", max_pages: int = 3) -> OCRResult:
+        if pytesseract is None:
+            return self._empty("tesseract-unavailable", self.default_lang)
+        if pdfium is None:
+            return self._empty("pdf-raster-unavailable", self.default_lang)
+
+        lang_map = {
+            "AUTO-DETECT": "eng",
+            "Latin (English)": "eng",
+            "Devanagari (Hindi/Marathi/Sanskrit)": "hin+eng",
+            "Bengali": "ben+eng",
+            "Tamil": "tam+eng",
+            "Telugu": "tel+eng",
+            "Kannada": "kan+eng",
+            "Malayalam": "mal+eng",
+            "Gujarati": "guj+eng",
+            "Gurmukhi (Punjabi)": "pan+eng",
+            "Odia": "ori+eng",
+            "Urdu (Nastaliq)": "urd+eng",
+        }
+        lang = lang_map.get(hint_script, "eng")
+
+        all_words: list[str] = []
+        all_bbox: list[list[float]] = []
+        all_conf: list[float] = []
+
+        try:
+            pdf = pdfium.PdfDocument(file_path)
+            page_count = min(len(pdf), max_pages)
+            for page_idx in range(page_count):
+                page = pdf.get_page(page_idx)
+                pil_image = page.render(scale=2.0).to_pil()
+                page.close()
+
+                words, bbox, conf = self._extract_tesseract_tokens(image=pil_image, lang=lang)
+                all_words.extend(words)
+                all_bbox.extend(bbox)
+                all_conf.extend(conf)
+        except Exception:
+            return self._empty("pdf-raster-failed", lang)
+
+        text = " ".join(all_words).strip()
+        avg = (sum(all_conf) / len(all_conf)) if all_conf else 0.0
+        return OCRResult(
+            text=text,
+            confidence=float(avg),
+            engine="tesseract-pdf",
+            language=lang,
+            words=all_words,
+            bbox=all_bbox,
+            line_confidence=all_conf,
+        )
 
     def _extract_from_new_predict_api(self, paddle_ocr: Any, file_path: str) -> OCRResult | None:
         try:
@@ -299,6 +366,9 @@ class OCRAdapter:
             pdf = self._extract_pdf_text(file_path)
             if pdf.text:
                 return pdf
+            tess_pdf = self._extract_pdf_with_tesseract(file_path, hint_script=hint_script)
+            if tess_pdf.text:
+                return tess_pdf
 
         ctx = get_ocr_context()
         if ctx.ocr is None:

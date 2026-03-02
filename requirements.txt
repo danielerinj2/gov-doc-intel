@@ -4,6 +4,7 @@ numpy>=1.26.4
 pillow>=10.4.0
 opencv-python-headless>=4.10.0.84
 pypdf>=5.1.0
+pypdfium2>=4.30.0
 supabase>=2.11.0
 python-dotenv>=1.0.1
 pytesseract>=0.3.10
