@@ -234,9 +234,6 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
     with c2:
         doc_type_hint = st.selectbox("Document type hint", DOC_TYPE_HINTS, index=0)
 
-    citizen_id = st.text_input("Citizen ID", value="citizen-001")
-    notes = st.text_area("Operator notes", height=80)
-
     if uploaded:
         suffix = Path(uploaded.name).suffix.lower()
         if suffix in {".jpg", ".jpeg", ".png"}:
@@ -245,14 +242,15 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
             st.code(uploaded.getvalue().decode("utf-8", errors="ignore")[:2000])
 
     if st.button("Process Document", use_container_width=True, disabled=uploaded is None):
+        citizen_id = str(st.session_state.get("ingest_citizen_id") or "citizen-001").strip() or "citizen-001"
+        notes_raw = str(st.session_state.get("ingest_operator_notes") or "").strip()
+        notes = notes_raw or None
         if not uploaded:
             st.error("Upload a file first.")
-        elif not citizen_id.strip():
-            st.error("Citizen ID is required.")
         else:
             try:
                 created = service.create_document(
-                    citizen_id=citizen_id.strip(),
+                    citizen_id=citizen_id,
                     file_name=uploaded.name,
                     file_bytes=uploaded.getvalue(),
                     actor_id=actor_id,
@@ -260,7 +258,7 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
                     source="ONLINE_PORTAL",
                     script_hint=script_hint,
                     doc_type_hint=doc_type_hint,
-                    notes=notes.strip() or None,
+                    notes=notes,
                 )
                 processed = service.process_document(str(created["id"]), actor_id=actor_id, role=role)
                 st.session_state["last_processed_doc"] = processed
@@ -277,6 +275,10 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
                     )
             except Exception as exc:
                 st.error(str(exc))
+
+    with st.expander("Optional metadata", expanded=False):
+        st.text_input("Citizen ID", value="citizen-001", key="ingest_citizen_id")
+        st.text_area("Operator notes", height=80, key="ingest_operator_notes")
 
     last_processed = st.session_state.get("last_processed_doc")
     if isinstance(last_processed, dict):
