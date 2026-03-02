@@ -135,6 +135,12 @@ def _render_auth_page(auth_service: AuthService) -> None:
 
     if not auth_service.configured():
         st.warning(f"{auth_service.provider.capitalize()} authentication is unavailable. Continue in local mode.")
+        if auth_service.provider == "appwrite":
+            st.caption(
+                "Detected config: "
+                f"endpoint_set={bool(settings.appwrite_endpoint.strip())}, "
+                f"project_id_set={bool(settings.appwrite_project_id.strip())}"
+            )
         local_name = st.text_input("Name", key="local_name")
         local_email = st.text_input("Email (optional)", key="local_email")
         if st.button("Continue in Local Mode", use_container_width=True, key="local_continue_btn"):
@@ -423,6 +429,8 @@ def _render_system(service: DocumentService, auth_service: AuthService) -> None:
             "SUPABASE_URL_VALID": settings.supabase_url_valid(),
             "SUPABASE_KEY_PRESENT": settings.supabase_key_present(),
             "APPWRITE_CONFIGURED": settings.appwrite_configured(),
+            "APPWRITE_ENDPOINT_SET": bool(settings.appwrite_endpoint.strip()),
+            "APPWRITE_PROJECT_ID_SET": bool(settings.appwrite_project_id.strip()),
             "AUTH_PROVIDER": auth_service.provider,
             "AUTH_CONFIGURED": auth_service.configured(),
             "SENDGRID_CONFIGURED": auth_service.email_adapter.configured(),

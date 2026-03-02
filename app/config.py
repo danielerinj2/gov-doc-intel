@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Any
 
 try:
     from dotenv import load_dotenv
@@ -23,10 +24,29 @@ def _secret_lookup(key: str) -> str:
     try:
         import streamlit as st  # type: ignore
 
-        sec = st.secrets.get(key)
-        if sec is None:
-            return ""
-        return str(sec)
+        key_variants = [key, key.lower(), key.upper()]
+
+        for k in key_variants:
+            sec = st.secrets.get(k)
+            if sec is not None and str(sec).strip() != "":
+                return str(sec)
+
+        def _walk(val: Any) -> dict[str, str]:
+            out: dict[str, str] = {}
+            if isinstance(val, dict):
+                for kk, vv in val.items():
+                    if isinstance(vv, dict):
+                        out.update(_walk(vv))
+                    else:
+                        out[str(kk)] = str(vv)
+            return out
+
+        flat = _walk(dict(st.secrets))
+        for k in key_variants:
+            v = flat.get(k)
+            if v is not None and str(v).strip() != "":
+                return str(v)
+        return ""
     except Exception:
         return ""
 
