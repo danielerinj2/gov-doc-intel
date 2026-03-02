@@ -30,6 +30,8 @@ You can switch auth provider with `AUTH_PROVIDER`:
 - `supabase` (default)
 - `appwrite`
 
+When `AUTH_PROVIDER=appwrite`, persistence can also use Appwrite Database collections (`documents`, `reviews`, `audit_events`) if `APPWRITE_API_KEY` and collection setup are present.
+
 ## SendGrid
 
 Set `SENDGRID_API_KEY` and `SENDGRID_FROM_EMAIL` to send signup, reset, and username reminder emails from your sender.
@@ -65,5 +67,17 @@ If using Appwrite auth:
 - `APPWRITE_ENDPOINT`
 - `APPWRITE_PROJECT_ID`
 - `APPWRITE_API_KEY` (optional for auth flows)
+- `APPWRITE_DATABASE_ID`
+- `APPWRITE_COLLECTION_DOCUMENTS`
+- `APPWRITE_COLLECTION_REVIEWS`
+- `APPWRITE_COLLECTION_AUDIT_EVENTS`
+
+## Appwrite Database Setup
+
+To create required Appwrite database/collections/attributes:
+
+```bash
+python scripts/setup_appwrite.py
+```
 
 Advanced classifiers are optional. If `layoutlm` or `fusion` models/artifacts are missing, the app automatically falls back to the heuristic classifier.

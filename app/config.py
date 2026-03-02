@@ -91,6 +91,10 @@ class Settings:
     appwrite_project_name: str = _secret_lookup("APPWRITE_PROJECT_NAME") or _secret_lookup("VITE_APPWRITE_PROJECT_NAME")
     appwrite_api_key: str = _secret_lookup("APPWRITE_API_KEY")
     appwrite_recovery_redirect_url: str = _secret_lookup("APPWRITE_RECOVERY_REDIRECT_URL") or app_login_url
+    appwrite_database_id: str = _secret_lookup("APPWRITE_DATABASE_ID") or "govdociq"
+    appwrite_documents_collection_id: str = _secret_lookup("APPWRITE_COLLECTION_DOCUMENTS") or "documents"
+    appwrite_reviews_collection_id: str = _secret_lookup("APPWRITE_COLLECTION_REVIEWS") or "reviews"
+    appwrite_audit_collection_id: str = _secret_lookup("APPWRITE_COLLECTION_AUDIT_EVENTS") or "audit_events"
 
     data_dir: str = _secret_lookup("DATA_DIR") or ".data"
     default_workspace_id: str = (

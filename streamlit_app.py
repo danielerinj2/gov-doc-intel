@@ -434,7 +434,7 @@ def _render_system(service: DocumentService, auth_service: AuthService) -> None:
             "AUTH_PROVIDER": auth_service.provider,
             "AUTH_CONFIGURED": auth_service.configured(),
             "SENDGRID_CONFIGURED": auth_service.email_adapter.configured(),
-            "PERSISTENCE": "Supabase" if service.using_supabase else "In-memory",
+            "PERSISTENCE": service.persistence_backend,
             "PERSISTENCE_NOTE": service.repo_error,
         }
     )

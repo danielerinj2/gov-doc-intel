@@ -26,6 +26,7 @@ class DocumentService:
         self.repo: DocumentRepository = repo
         self.using_supabase = using_supabase
         self.repo_error = repo_error
+        self.persistence_backend = type(repo).__name__
         self.ocr = OCRAdapter(default_lang=settings.ocr_default_lang)
         self.data_dir = Path(settings.data_dir)
         self.upload_dir = self.data_dir / "uploads"

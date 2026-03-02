@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import re
 from threading import RLock
 from typing import Any
@@ -340,7 +341,163 @@ class SupabaseRESTRepository(DocumentRepository):
         return self._rest("GET", "audit_events", params=params, payload=None)
 
 
+class AppwriteRepository(DocumentRepository):
+    def __init__(self) -> None:
+        self.endpoint = settings.appwrite_endpoint.rstrip("/")
+        self.project_id = settings.appwrite_project_id
+        self.api_key = settings.appwrite_api_key
+        self.database_id = settings.appwrite_database_id
+        self.documents_col = settings.appwrite_documents_collection_id
+        self.reviews_col = settings.appwrite_reviews_collection_id
+        self.audit_col = settings.appwrite_audit_collection_id
+
+    def _headers(self) -> dict[str, str]:
+        if not self.api_key:
+            raise RepositoryError("APPWRITE_API_KEY is required for database persistence.")
+        return {
+            "X-Appwrite-Project": self.project_id,
+            "X-Appwrite-Key": self.api_key,
+            "Content-Type": "application/json",
+        }
+
+    def _row_to_doc(self, row: dict[str, Any], *, row_type: str) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        data = dict(row)
+        data.setdefault("id", str(uuid4()))
+        data.setdefault("created_at", now)
+        data.setdefault("updated_at", now)
+        tenant_id = str(data.get("tenant_id") or settings.default_workspace_id or "workspace-default")
+        data["tenant_id"] = tenant_id
+        return {
+            "doc_id": str(data["id"]),
+            "row_type": row_type,
+            "tenant_id": tenant_id,
+            "document_id": str(data.get("document_id") or ""),
+            "state": str(data.get("state") or ""),
+            "decision": str(data.get("decision") or ""),
+            "created_at": str(data.get("created_at") or now),
+            "updated_at": str(data.get("updated_at") or now),
+            "data_json": json.dumps(data, ensure_ascii=False),
+        }
+
+    def _doc_to_row(self, doc: dict[str, Any]) -> dict[str, Any]:
+        payload = str(doc.get("data_json") or "{}")
+        try:
+            row = json.loads(payload)
+            if isinstance(row, dict):
+                return row
+        except Exception:
+            pass
+        return {}
+
+    def _create_document(self, collection_id: str, document_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        url = f"{self.endpoint}/databases/{self.database_id}/collections/{collection_id}/documents"
+        body = {"documentId": document_id, "data": data}
+        res = requests.post(url, headers=self._headers(), json=body, timeout=20)
+        if res.status_code >= 400:
+            raise RepositoryError(f"Appwrite create failed [{res.status_code}] {res.text[:400]}")
+        return res.json() or {}
+
+    def _update_document(self, collection_id: str, document_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        url = f"{self.endpoint}/databases/{self.database_id}/collections/{collection_id}/documents/{document_id}"
+        body = {"data": data}
+        res = requests.patch(url, headers=self._headers(), json=body, timeout=20)
+        if res.status_code >= 400:
+            raise RepositoryError(f"Appwrite update failed [{res.status_code}] {res.text[:400]}")
+        return res.json() or {}
+
+    def _get_document(self, collection_id: str, document_id: str) -> dict[str, Any] | None:
+        url = f"{self.endpoint}/databases/{self.database_id}/collections/{collection_id}/documents/{document_id}"
+        res = requests.get(url, headers=self._headers(), timeout=20)
+        if res.status_code == 404:
+            return None
+        if res.status_code >= 400:
+            raise RepositoryError(f"Appwrite get failed [{res.status_code}] {res.text[:400]}")
+        return res.json() or {}
+
+    def _list_documents(self, collection_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        url = f"{self.endpoint}/databases/{self.database_id}/collections/{collection_id}/documents"
+        params = {"limit": max(1, min(limit, 5000))}
+        res = requests.get(url, headers=self._headers(), params=params, timeout=20)
+        if res.status_code >= 400:
+            raise RepositoryError(f"Appwrite list failed [{res.status_code}] {res.text[:400]}")
+        data = res.json() or {}
+        return [dict(d) for d in (data.get("documents") or [])]
+
+    def create_document(self, row: dict[str, Any]) -> dict[str, Any]:
+        doc = self._row_to_doc(row, row_type="document")
+        self._create_document(self.documents_col, str(doc["doc_id"]), doc)
+        return self._doc_to_row(doc)
+
+    def update_document(self, document_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        existing_doc = self._get_document(self.documents_col, document_id)
+        if not existing_doc:
+            raise RepositoryError(f"Document not found: {document_id}")
+        existing = self._doc_to_row(existing_doc)
+        existing.update(dict(updates))
+        existing["id"] = document_id
+        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
+        doc = self._row_to_doc(existing, row_type="document")
+        self._update_document(self.documents_col, document_id, doc)
+        return existing
+
+    def get_document(self, document_id: str) -> dict[str, Any] | None:
+        doc = self._get_document(self.documents_col, document_id)
+        if not doc:
+            return None
+        return self._doc_to_row(doc)
+
+    def list_documents(self, limit: int = 500) -> list[dict[str, Any]]:
+        docs = self._list_documents(self.documents_col, limit=limit)
+        rows = [self._doc_to_row(d) for d in docs]
+        rows = [r for r in rows if isinstance(r, dict)]
+        rows.sort(key=lambda r: str(r.get("updated_at", r.get("created_at", ""))), reverse=True)
+        return rows[:limit]
+
+    def create_review(self, row: dict[str, Any]) -> dict[str, Any]:
+        doc = self._row_to_doc(row, row_type="review")
+        self._create_document(self.reviews_col, str(doc["doc_id"]), doc)
+        return self._doc_to_row(doc)
+
+    def list_reviews(self, document_id: str | None = None) -> list[dict[str, Any]]:
+        docs = self._list_documents(self.reviews_col, limit=5000)
+        rows = [self._doc_to_row(d) for d in docs]
+        if document_id:
+            rows = [r for r in rows if str(r.get("document_id")) == document_id]
+        rows.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
+        return rows
+
+    def create_audit_event(self, row: dict[str, Any]) -> dict[str, Any]:
+        doc = self._row_to_doc(row, row_type="audit_event")
+        self._create_document(self.audit_col, str(doc["doc_id"]), doc)
+        return self._doc_to_row(doc)
+
+    def list_audit_events(self, document_id: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+        docs = self._list_documents(self.audit_col, limit=max(limit, 1000))
+        rows = [self._doc_to_row(d) for d in docs]
+        if document_id:
+            rows = [r for r in rows if str(r.get("document_id")) == document_id]
+        rows.sort(key=lambda r: str(r.get("created_at", "")), reverse=True)
+        return rows[:limit]
+
+
 def build_repository() -> tuple[DocumentRepository, bool, str | None]:
+    if settings.auth_provider == "appwrite":
+        if not settings.appwrite_configured():
+            return InMemoryRepository(), False, "Appwrite not configured; using in-memory repository."
+        try:
+            repo = AppwriteRepository()
+            # Basic reachability check.
+            repo._list_documents(repo.documents_col, limit=1)
+            return repo, False, None
+        except Exception as exc:
+            return (
+                InMemoryRepository(),
+                False,
+                f"Appwrite unavailable or collections missing ({exc}). "
+                "Run scripts/setup_appwrite.py and restart. Using in-memory repository.",
+            )
+
     client = get_supabase_client()
     required_cols = "id"
 
