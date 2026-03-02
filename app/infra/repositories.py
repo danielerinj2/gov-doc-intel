@@ -24,9 +24,15 @@ class RepositoryError(RuntimeError):
 def _extract_missing_column_name(message: str) -> str | None:
     # Handles messages like:
     # "Could not find the 'file_path' column of 'documents' in the schema cache"
-    m = re.search(r"'([^']+)'\\s+column", message)
-    if m:
-        return m.group(1)
+    patterns = [
+        r"'([^']+)'\s+column",
+        r"column\s+'([^']+)'",
+        r'Could not find the "([^"]+)" column',
+    ]
+    for pat in patterns:
+        m = re.search(pat, message, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
     return None
 
 
