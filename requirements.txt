@@ -9,3 +9,4 @@ supabase>=2.11.0
 python-dotenv>=1.0.1
 pytesseract>=0.3.10
 requests>=2.32.3
+anthropic>=0.34.0

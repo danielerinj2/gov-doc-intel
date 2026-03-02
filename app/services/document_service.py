@@ -167,6 +167,128 @@ class DocumentService:
         except Exception:
             return []
 
+    @staticmethod
+    def _extract_json_from_text(raw: str) -> dict[str, Any] | None:
+        txt = str(raw or "").strip()
+        if not txt:
+            return None
+        # Handle fenced JSON output.
+        if txt.startswith("```"):
+            txt = txt.strip("`").strip()
+            if txt.lower().startswith("json"):
+                txt = txt[4:].strip()
+        try:
+            parsed = json.loads(txt)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        # Fallback: take the first JSON object span.
+        start = txt.find("{")
+        end = txt.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                parsed = json.loads(txt[start : end + 1])
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return None
+        return None
+
+    def _extract_fields_with_claude(self, doc_type: str, text: str) -> list[dict[str, Any]]:
+        if not settings.anthropic_api_key.strip():
+            return []
+        content = str(text or "").strip()
+        if not content:
+            return []
+
+        keys = self._llm_field_keys_for_doc_type(doc_type)
+        payload_schema = {k: {"value": None, "confidence": 0} for k in keys}
+        prompt = (
+            "You are a document field extractor for Indian government documents.\n"
+            f"Document type: {doc_type}\n"
+            "Extract fields from the OCR text and return ONLY valid JSON (no markdown).\n"
+            f"Output schema: {json.dumps(payload_schema, ensure_ascii=False)}\n"
+            "Rules:\n"
+            "- confidence is 0-100\n"
+            "- Use null for not found values\n"
+            "- Never guess\n"
+            "- Normalize dates to DD/MM/YYYY when possible\n"
+            "- Keep identifiers exactly as present except trimming spaces\n"
+            "- S/O, Son of, Putra map to father_name where applicable\n\n"
+            f"OCR text:\n{content[:18000]}"
+        )
+
+        body = {
+            "model": settings.model_name,
+            "max_tokens": 1200,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        try:
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": settings.anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json=body,
+                timeout=25,
+            )
+            if res.status_code >= 400:
+                return []
+            out = res.json() or {}
+            chunks = out.get("content") or []
+            text_parts = [
+                str(ch.get("text") or "")
+                for ch in chunks
+                if isinstance(ch, dict) and str(ch.get("type") or "") == "text"
+            ]
+            parsed = self._extract_json_from_text("\n".join(text_parts))
+            if not parsed:
+                return []
+
+            rows: list[dict[str, Any]] = []
+            for k in keys:
+                raw_val = parsed.get(k)
+                confidence = 0.0
+                value = ""
+                if isinstance(raw_val, dict):
+                    value = str(raw_val.get("value") or "").strip()
+                    try:
+                        confidence = float(raw_val.get("confidence") or 0.0)
+                    except Exception:
+                        confidence = 0.0
+                else:
+                    value = str(raw_val or "").strip()
+                if not value:
+                    continue
+                if confidence > 1:
+                    confidence = confidence / 100.0
+                confidence = max(0.0, min(1.0, confidence if confidence > 0 else 0.78))
+                rows.append(
+                    {
+                        "field_name": k,
+                        "normalized_value": value,
+                        "confidence": round(confidence, 3),
+                        "source": "LLM_ASSISTED_CLAUDE",
+                    }
+                )
+            return rows
+        except Exception:
+            return []
+
+    def _extract_fields_with_llm(self, doc_type: str, text: str) -> tuple[list[dict[str, Any]], str]:
+        # Prefer Claude when configured; fallback to Groq.
+        claude_fields = self._extract_fields_with_claude(doc_type, text)
+        if claude_fields:
+            return claude_fields, "claude"
+        groq_fields = self._extract_fields_with_groq(doc_type, text)
+        if groq_fields:
+            return groq_fields, "groq"
+        return [], ""
+
     def _merge_extracted_fields(
         self,
         base_fields: list[dict[str, Any]],
@@ -338,7 +460,10 @@ class DocumentService:
             classification["confidence"] = max(float(classification.get("confidence") or 0.0), 0.7)
 
         extraction = extract_fields(str(classification.get("doc_type") or "OTHER"), merged_text)
-        llm_fields = self._extract_fields_with_groq(str(classification.get("doc_type") or "OTHER"), merged_text)
+        llm_fields, llm_provider = self._extract_fields_with_llm(
+            str(classification.get("doc_type") or "OTHER"),
+            merged_text,
+        )
         if llm_fields:
             extraction = {"fields": self._merge_extracted_fields(list(extraction.get("fields") or []), llm_fields)}
         validation = validate_fields(str(classification.get("doc_type") or "OTHER"), extraction.get("fields", []))
@@ -367,6 +492,7 @@ class DocumentService:
             )
         ]
         metadata["llm_extraction_used"] = bool(llm_fields)
+        metadata["llm_extraction_provider"] = llm_provider or None
         updated = self.repo.update_document(
             document_id,
             {
@@ -401,6 +527,7 @@ class DocumentService:
                 "confidence": conf,
                 "risk_score": updated.get("risk_score"),
                 "llm_extraction_used": bool(llm_fields),
+                "llm_provider": llm_provider or None,
             },
             tenant_id=str(doc.get("tenant_id") or self.default_tenant_id),
         )

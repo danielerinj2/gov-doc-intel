@@ -206,6 +206,67 @@ def _validate_form_value(field_schema: dict[str, Any], value: str) -> str:
     return "PASS"
 
 
+def _extract_value_from_ocr_text(field_schema: dict[str, Any], ocr_text: str) -> str:
+    text = str(ocr_text or "").strip()
+    if not text:
+        return ""
+
+    field_id = _norm_key(field_schema.get("field_id"))
+    label = str(field_schema.get("label") or "")
+    aliases = [str(a) for a in (field_schema.get("aliases") or [])]
+    alias_terms = [field_id, _norm_key(label)] + [_norm_key(a) for a in aliases]
+    alias_terms = [a for a in alias_terms if a]
+
+    normalized = " ".join(text.split())
+
+    if field_id == "aadhaar_number":
+        m = re.search(r"\b\d{4}\s?\d{4}\s?\d{4}\b", normalized)
+        if m:
+            return m.group(0).replace(" ", "")
+    if field_id == "pan_number":
+        m = re.search(r"\b[A-Z]{5}\d{4}[A-Z]\b", normalized.upper())
+        if m:
+            return m.group(0)
+    if field_id == "ifsc_code":
+        m = re.search(r"\b[A-Z]{4}0[A-Z0-9]{6}\b", normalized.upper())
+        if m:
+            return m.group(0)
+    if "date" in field_id or field_id in {"dob", "date_of_death", "marriage_date"}:
+        m = re.search(r"\b\d{2}[/-]\d{2}[/-]\d{4}\b", normalized)
+        if m:
+            return m.group(0).replace("-", "/")
+    if "income" in field_id:
+        m = re.search(r"(?:rs\.?|inr|₹)\s*([0-9,]{3,})", normalized, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).replace(",", "")
+
+    lines = [ln.strip() for ln in re.split(r"[\r\n]+", text) if ln.strip()]
+    for line in lines:
+        lower_line = line.lower()
+        for alias in alias_terms:
+            alias_display = alias.replace("_", " ").strip().lower()
+            if alias_display and alias_display in lower_line:
+                parts = re.split(r"\s*[:\-|]\s*", line, maxsplit=1)
+                if len(parts) == 2:
+                    candidate = parts[1].strip()
+                else:
+                    idx = lower_line.find(alias_display)
+                    candidate = line[idx + len(alias_display) :].strip(" :-|")
+                if candidate:
+                    return candidate
+
+    if "name" in field_id:
+        m = re.search(r"(?:name|नाम)\s*[:\-]\s*([A-Za-z\u0900-\u097F\s]{3,80})", text, flags=re.IGNORECASE)
+        if m:
+            return " ".join(m.group(1).split())
+    if field_id == "address":
+        m = re.search(r"(?:address|पता)\s*[:\-]\s*([^\n]{8,180})", text, flags=re.IGNORECASE)
+        if m:
+            return " ".join(m.group(1).split())
+
+    return ""
+
+
 def _build_form_population_rows(selected_doc: dict[str, Any], document_type: str) -> list[dict[str, Any]]:
     schema = FORM_SCHEMAS.get(document_type, FORM_SCHEMAS["OTHER"])
     extracted = (selected_doc.get("extraction_output") or {}).get("fields") or []
@@ -227,6 +288,7 @@ def _build_form_population_rows(selected_doc: dict[str, Any], document_type: str
         if isinstance(r, dict) and str(r.get("field_id") or "").strip()
     }
 
+    ocr_text = str(selected_doc.get("ocr_text") or selected_doc.get("raw_text") or "")
     rows: list[dict[str, Any]] = []
     for field in schema:
         field_id = str(field["field_id"])
@@ -240,6 +302,11 @@ def _build_form_population_rows(selected_doc: dict[str, Any], document_type: str
 
         ocr_value = str((matched or {}).get("normalized_value") or "")
         confidence = float((matched or {}).get("confidence") or 0.0)
+        if not ocr_value:
+            fallback_value = _extract_value_from_ocr_text(field, ocr_text)
+            if fallback_value:
+                ocr_value = fallback_value
+                confidence = max(confidence, 0.62)
 
         prev = prev_map.get(_norm_key(field_id), {})
         value = str(prev.get("value") or ocr_value or "")
@@ -524,9 +591,19 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
         else:
             st.warning("OCR returned empty text for this file. Try a clearer scan/image or re-run processing.")
 
+        st.markdown("### 3) Document Classification")
+        cls = dict(last_processed.get("classification_output") or {})
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Detected Type", str(cls.get("doc_type") or "OTHER"))
+        m2.metric("Classification Conf.", f"{float(cls.get('confidence') or 0.0):.2f}")
+        m3.metric("Pipeline Confidence", f"{float(last_processed.get('confidence') or 0.0):.2f}")
+        m4.metric("State", str(last_processed.get("state") or "UNKNOWN"))
+        with st.expander("Classification details", expanded=False):
+            st.json(cls)
+
 
 def _render_structured_fields(service: DocumentService, actor_id: str, role: str) -> None:
-    st.markdown("### 3) Verification Workspace")
+    st.markdown("### 4) OCR Data \u2192 Form Population Engine")
     docs = service.list_documents(limit=500)
     if not docs:
         st.info("No processed documents yet. Upload and process a document first.")
@@ -580,6 +657,14 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
         index=schema_types.index(detected_doc_type) if detected_doc_type in schema_types else schema_types.index("OTHER"),
         key=f"workspace_doc_type_{doc_id}",
     )
+    schema_len = len(FORM_SCHEMAS.get(selected_doc_type, FORM_SCHEMAS["OTHER"]))
+    llm_used = bool(((selected_doc.get("metadata") or {}).get("llm_extraction_used")))
+    llm_provider = str(((selected_doc.get("metadata") or {}).get("llm_extraction_provider") or "")).strip()
+    st.caption(
+        f"Selected schema: {selected_doc_type} ({schema_len} fields) \u00b7 "
+        f"Extraction engine: "
+        f"{('OCR + ' + llm_provider.upper() + ' assist') if llm_used and llm_provider else ('OCR + LLM assist' if llm_used else 'OCR + rules')}"
+    )
 
     rows = _build_form_population_rows(selected_doc, selected_doc_type)
     row_by_id = {str(r.get("field_id")): r for r in rows}
@@ -591,9 +676,17 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
     z1, z2, z3 = st.columns([4, 3.5, 2.5], gap="large")
 
     with z2:
-        st.markdown("#### Smart Form")
+        st.markdown("#### Zone 2 — Smart Form")
+        high_ct = len([r for r in rows if str(r.get("confidence_badge")) == "HIGH"])
+        medlow_ct = len([r for r in rows if str(r.get("confidence_badge")) in {"MEDIUM", "LOW"}])
+        miss_ct = len([r for r in rows if str(r.get("value") or "").strip() == ""])
+        c_chip1, c_chip2, c_chip3 = st.columns(3)
+        c_chip1.caption(f"\u2705 High confidence: {high_ct}")
+        c_chip2.caption(f"\u26a0 Needs review: {medlow_ct}")
+        c_chip3.caption(f"\u2757 Missing: {miss_ct}")
+
         focus_field_id = st.selectbox(
-            "Focus field",
+            "Focus field on document",
             options=focus_options,
             index=0,
             format_func=lambda fid: str(row_by_id.get(fid, {}).get("label") or fid),
@@ -760,7 +853,7 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
         )
 
     with z1:
-        st.markdown("#### Document Viewer")
+        st.markdown("#### Zone 1 — Document Viewer")
         file_path = str(selected_doc.get("file_path") or "")
         if not file_path:
             ingestion = ((selected_doc.get("metadata") or {}).get("ingestion") or {})
@@ -794,7 +887,7 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
         )
 
     with z3:
-        st.markdown("#### Integrity & Audit")
+        st.markdown("#### Zone 3 — Integrity & Audit")
         fraud = selected_doc.get("fraud_output") or {}
         risk_level = str(fraud.get("risk_level") or "UNKNOWN").upper()
         checklist = [
@@ -999,7 +1092,10 @@ def _render_system(service: DocumentService, auth_service: AuthService) -> None:
         {
             "APP_ENV": settings.app_env,
             "OCR_BACKEND": settings.ocr_backend,
+            "MODEL_NAME": settings.model_name,
+            "ANTHROPIC_CONFIGURED": bool(settings.anthropic_api_key.strip()),
             "GROQ_CONFIGURED": bool(settings.groq_api_key.strip()),
+            "LLM_PROVIDER_ACTIVE": "claude" if settings.anthropic_api_key.strip() else ("groq" if settings.groq_api_key.strip() else "none"),
             "SUPABASE_URL_VALID": settings.supabase_url_valid(),
             "SUPABASE_KEY_PRESENT": settings.supabase_key_present(),
             "APPWRITE_CONFIGURED": settings.appwrite_configured(),

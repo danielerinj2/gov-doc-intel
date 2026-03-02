@@ -78,6 +78,8 @@ class Settings:
 
     issuer_registry_base_url: str = _secret_lookup("ISSUER_REGISTRY_BASE_URL")
     issuer_registry_token: str = _secret_lookup("ISSUER_REGISTRY_TOKEN")
+    anthropic_api_key: str = _secret_lookup("ANTHROPIC_API_KEY")
+    model_name: str = _secret_lookup("MODEL_NAME") or "claude-sonnet-4-5-20251022"
     groq_api_key: str = _secret_lookup("GROQ_API_KEY")
     groq_model: str = _secret_lookup("GROQ_MODEL") or "llama-3.1-70b-versatile"
 

@@ -1,0 +1,8 @@
+.env
+.env.local
+.env.development
+.env.production
+__pycache__/
+*.py[cod]
+.DS_Store
+.data/
