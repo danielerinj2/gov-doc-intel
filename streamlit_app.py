@@ -223,30 +223,6 @@ def _render_dashboard(service: DocumentService, role: str) -> None:
     c3.markdown(_kpi("Approved", len(approved)), unsafe_allow_html=True)
     c4.markdown(_kpi("Rejected", len(rejected)), unsafe_allow_html=True)
 
-    with st.expander("Workspace Overview", expanded=False):
-        st.markdown("#### Profiles")
-        prof_cols = st.columns(len(ALL_ROLES))
-        for col, r in zip(prof_cols, ALL_ROLES):
-            meta = ROLE_META[r]
-            with col:
-                st.markdown(
-                    (
-                        '<div class="card">'
-                        f"<div style='font-size:1.4rem'>{meta['icon']}</div>"
-                        f"<div style='font-weight:700'>{meta['label']}</div>"
-                        f"<div style='font-size:0.8rem;color:#4c6186'>{'Current session' if r == role else 'Available profile'}</div>"
-                        "</div>"
-                    ),
-                    unsafe_allow_html=True,
-                )
-
-        st.markdown("#### Recent Documents")
-        if docs:
-            df = pd.DataFrame([_doc_summary_row(d) for d in docs])
-            st.dataframe(df.head(15), use_container_width=True, hide_index=True)
-        else:
-            st.info("No documents yet. Submit one below.")
-
 
 def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> None:
     st.markdown("### 1) Document Setup & Upload")
