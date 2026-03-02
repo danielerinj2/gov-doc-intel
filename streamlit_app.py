@@ -294,12 +294,26 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
                     notes=notes.strip() or None,
                 )
                 processed = service.process_document(str(created["id"]), actor_id=actor_id, role=role)
+                st.session_state["last_processed_doc"] = processed
                 st.success(
                     f"Processed {processed['id']} | state={processed.get('state')} | "
                     f"doc_type={(processed.get('classification_output') or {}).get('doc_type')}"
                 )
             except Exception as exc:
                 st.error(str(exc))
+
+    last_processed = st.session_state.get("last_processed_doc")
+    if isinstance(last_processed, dict):
+        st.markdown("### Latest OCR Output")
+        ocr_text = str(last_processed.get("ocr_text") or "").strip()
+        if ocr_text:
+            st.text_area("OCR Text", value=ocr_text, height=220, disabled=True)
+        else:
+            st.warning("OCR returned empty text for this file. Try a clearer scan/image or re-run processing.")
+        if st.button("Open In Review Workbench", use_container_width=True):
+            st.session_state["nav_page"] = "🔍 Review Workbench"
+            st.session_state["review_doc_target_id"] = str(last_processed.get("id") or "")
+            st.rerun()
 
     st.markdown("### Queue")
     docs = service.list_documents(limit=500)
@@ -322,7 +336,15 @@ def _render_review(service: DocumentService, actor_id: str, role: str) -> None:
         return
 
     labels = {_build_doc_label(d): d for d in review_docs}
-    selected_label = st.selectbox("Select document", options=list(labels.keys()), key="review_doc_select")
+    label_list = list(labels.keys())
+    target_id = str(st.session_state.pop("review_doc_target_id", "") or "")
+    default_idx = 0
+    if target_id:
+        for idx, lb in enumerate(label_list):
+            if lb.startswith(f"{target_id} |"):
+                default_idx = idx
+                break
+    selected_label = st.selectbox("Select document", options=label_list, index=default_idx)
     selected_doc = labels[selected_label]
     doc_id = str(selected_doc.get("id"))
 
@@ -476,7 +498,10 @@ def main() -> None:
         st.session_state["active_profile"] = active_profile
 
         actor_id = str(user.get("user_id") or user_email or "user-001")
-        page = st.radio("Navigation", PAGES, index=0)
+        if "nav_page" not in st.session_state or st.session_state["nav_page"] not in PAGES:
+            st.session_state["nav_page"] = PAGES[0]
+        st.radio("Navigation", PAGES, key="nav_page")
+        page = str(st.session_state.get("nav_page") or PAGES[0])
 
         if st.button("Sign out", use_container_width=True):
             st.session_state["auth_user"] = None

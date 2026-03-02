@@ -107,9 +107,7 @@ class OCRAdapter:
             if not result:
                 return None
 
-            raw_words: list[str] = []
-            raw_bbox: list[list[list[float]]] = []
-            raw_conf: list[float] = []
+            candidates: list[tuple[float, Any, str]] = []
 
             for res in result:
                 texts = res.get("rec_texts") or []
@@ -117,10 +115,27 @@ class OCRAdapter:
                 scores = res.get("rec_scores") or []
                 for score, poly, text in zip(scores, polys, texts):
                     s = float(score or 0.0)
-                    if s >= settings.ocr_min_confidence:
-                        raw_words.append(str(text or ""))
-                        raw_bbox.append(poly.tolist() if hasattr(poly, "tolist") else poly)
-                        raw_conf.append(s)
+                    candidates.append((s, poly, str(text or "")))
+
+            def _pick_rows(threshold: float) -> tuple[list[str], list[list[list[float]]], list[float]]:
+                words: list[str] = []
+                bbox: list[list[list[float]]] = []
+                conf: list[float] = []
+                for s, poly, txt in candidates:
+                    if s >= threshold:
+                        words.append(txt)
+                        bbox.append(poly.tolist() if hasattr(poly, "tolist") else poly)
+                        conf.append(s)
+                return words, bbox, conf
+
+            # First pass: configured threshold, then relaxed thresholds to avoid blank OCR on low-quality scans.
+            raw_words, raw_bbox, raw_conf = _pick_rows(settings.ocr_min_confidence)
+            if not raw_words:
+                raw_words, raw_bbox, raw_conf = _pick_rows(0.25)
+            if not raw_words:
+                raw_words = [txt for _, _, txt in candidates]
+                raw_bbox = [poly.tolist() if hasattr(poly, "tolist") else poly for _, poly, _ in candidates]
+                raw_conf = [s for s, _, _ in candidates]
 
             words, bbox, conf = clean_ocr_output(raw_words, raw_bbox, raw_conf)
             joined = " ".join(words).strip()
@@ -140,9 +155,7 @@ class OCRAdapter:
     def _extract_from_legacy_ocr_api(self, paddle_ocr: Any, file_path: str) -> OCRResult:
         try:
             ocr_out = paddle_ocr.ocr(file_path, cls=True)
-            raw_words: list[str] = []
-            raw_bbox: list[list[list[float]]] = []
-            raw_conf: list[float] = []
+            candidates: list[tuple[float, Any, str]] = []
             for block in ocr_out or []:
                 for line in block or []:
                     if not isinstance(line, (list, tuple)) or len(line) < 2:
@@ -151,10 +164,26 @@ class OCRAdapter:
                     rec = line[1]
                     text = str(rec[0] or "").strip() if isinstance(rec, (list, tuple)) else ""
                     score = float(rec[1] or 0.0) if isinstance(rec, (list, tuple)) and len(rec) > 1 else 0.0
-                    if score >= settings.ocr_min_confidence:
-                        raw_words.append(text)
-                        raw_bbox.append(poly)
-                        raw_conf.append(score)
+                    candidates.append((score, poly, text))
+
+            def _pick_rows(threshold: float) -> tuple[list[str], list[list[list[float]]], list[float]]:
+                words: list[str] = []
+                bbox: list[list[list[float]]] = []
+                conf: list[float] = []
+                for s, poly, txt in candidates:
+                    if s >= threshold:
+                        words.append(txt)
+                        bbox.append(poly)
+                        conf.append(s)
+                return words, bbox, conf
+
+            raw_words, raw_bbox, raw_conf = _pick_rows(settings.ocr_min_confidence)
+            if not raw_words:
+                raw_words, raw_bbox, raw_conf = _pick_rows(0.25)
+            if not raw_words:
+                raw_words = [txt for _, _, txt in candidates]
+                raw_bbox = [poly for _, poly, _ in candidates]
+                raw_conf = [s for s, _, _ in candidates]
 
             words, bbox, conf = clean_ocr_output(raw_words, raw_bbox, raw_conf)
             joined = "\n".join(words).strip()
