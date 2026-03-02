@@ -249,9 +249,21 @@ class DocumentService:
             if not parsed:
                 return []
 
+            alias_map: dict[str, str] = {
+                "date_of_birth": "dob",
+                "birth_date": "dob",
+                "aadhaar": "aadhaar_number",
+                "uid": "aadhaar_number",
+                "pan": "pan_number",
+            }
             rows: list[dict[str, Any]] = []
             for k in keys:
                 raw_val = parsed.get(k)
+                if raw_val is None:
+                    for ak, canon in alias_map.items():
+                        if canon == k and ak in parsed:
+                            raw_val = parsed.get(ak)
+                            break
                 confidence = 0.0
                 value = ""
                 if isinstance(raw_val, dict):

@@ -231,10 +231,18 @@ def _extract_value_from_ocr_text(field_schema: dict[str, Any], ocr_text: str) ->
         m = re.search(r"\b[A-Z]{4}0[A-Z0-9]{6}\b", normalized.upper())
         if m:
             return m.group(0)
+    if field_id == "gender":
+        low = normalized.lower()
+        if re.search(r"\bmale\b", low) or "पुरुष" in normalized:
+            return "MALE"
+        if re.search(r"\bfemale\b", low) or "महिला" in normalized:
+            return "FEMALE"
+        if re.search(r"\btransgender\b", low):
+            return "TRANSGENDER"
     if "date" in field_id or field_id in {"dob", "date_of_death", "marriage_date"}:
-        m = re.search(r"\b\d{2}[/-]\d{2}[/-]\d{4}\b", normalized)
+        m = re.search(r"\b\d{2}[./-]\d{2}[./-]\d{4}\b", normalized)
         if m:
-            return m.group(0).replace("-", "/")
+            return m.group(0).replace("-", "/").replace(".", "/")
     if "income" in field_id:
         m = re.search(r"(?:rs\.?|inr|₹)\s*([0-9,]{3,})", normalized, flags=re.IGNORECASE)
         if m:
@@ -264,9 +272,19 @@ def _extract_value_from_ocr_text(field_schema: dict[str, Any], ocr_text: str) ->
             value = re.sub(r"[^A-Za-z\u0900-\u097F\s.'-]", " ", value)
             return " ".join(value.split())[:80]
 
+        if fid == "gender":
+            low2 = value.lower()
+            if re.search(r"\bmale\b", low2) or "पुरुष" in value:
+                return "MALE"
+            if re.search(r"\bfemale\b", low2) or "महिला" in value:
+                return "FEMALE"
+            if re.search(r"\btransgender\b", low2):
+                return "TRANSGENDER"
+            return ""
+
         if "date" in fid or fid in {"dob", "date_of_death", "marriage_date"}:
-            m = re.search(r"\b\d{2}[/-]\d{2}[/-]\d{4}\b", value)
-            return m.group(0).replace("-", "/") if m else ""
+            m = re.search(r"\b\d{2}[./-]\d{2}[./-]\d{4}\b", value)
+            return m.group(0).replace("-", "/").replace(".", "/") if m else ""
 
         if "income" in fid:
             m = re.search(r"\d[\d,]{2,}", value)
@@ -629,19 +647,9 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
         else:
             st.warning("OCR returned empty text for this file. Try a clearer scan/image or re-run processing.")
 
-        st.markdown("### 3) Document Classification")
-        cls = dict(last_processed.get("classification_output") or {})
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Detected Type", str(cls.get("doc_type") or "OTHER"))
-        m2.metric("Classification Conf.", f"{float(cls.get('confidence') or 0.0):.2f}")
-        m3.metric("Pipeline Confidence", f"{float(last_processed.get('confidence') or 0.0):.2f}")
-        m4.metric("State", str(last_processed.get("state") or "UNKNOWN"))
-        with st.expander("Classification details", expanded=False):
-            st.json(cls)
-
 
 def _render_structured_fields(service: DocumentService, actor_id: str, role: str) -> None:
-    st.markdown("### 4) OCR Data \u2192 Form Population Engine")
+    st.markdown("### 3) OCR Data \u2192 Form Population Engine")
     docs = service.list_documents(limit=500)
     if not docs:
         st.info("No processed documents yet. Upload and process a document first.")

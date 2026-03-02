@@ -270,28 +270,73 @@ def _extract_aadhaar(text: str) -> dict[str, Any]:
     m_num = re.search(r"\b\d{4}\s?\d{4}\s?\d{4}\b", normalized)
     if m_num:
         aadhaar_number = m_num.group(0).replace(" ", "")
+    if not aadhaar_number:
+        for m in re.finditer(r"(?:\d[\s\-]*){12,16}", normalized):
+            digits = re.sub(r"\D", "", m.group(0))
+            if len(digits) == 12:
+                aadhaar_number = digits
+                break
 
     dob = None
-    m_dob = re.search(r"\b(\d{2}[-/]\d{2}[-/]\d{4})\b", normalized)
+    m_dob = re.search(r"\b(\d{2}[-/.]\d{2}[-/.]\d{4})\b", normalized)
     if m_dob:
-        dob = m_dob.group(1).replace("-", "/")
+        dob = m_dob.group(1).replace("-", "/").replace(".", "/")
 
     gender = None
-    for g in ["male", "female", "transgender", "पुरुष", "महिला"]:
-        if g in normalized.lower():
-            gender = g.upper()
-            break
+    low = normalized.lower()
+    if re.search(r"\bmale\b", low) or "पुरुष" in normalized:
+        gender = "MALE"
+    elif re.search(r"\bfemale\b", low) or "महिला" in normalized:
+        gender = "FEMALE"
+    elif re.search(r"\btransgender\b", low):
+        gender = "TRANSGENDER"
 
     name = None
     m_name = re.search(r"नाम[:\s]+([A-Za-z\s]{3,40})", text)
     if m_name:
         name = m_name.group(1).strip()
+    if not name:
+        m_name2 = re.search(
+            r"(?:name)\s*[:\-]?\s*([A-Za-z\u0900-\u097F\s]{3,80})",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if m_name2:
+            name = " ".join(m_name2.group(1).split())
+    if not name:
+        m_name3 = re.search(
+            r"([A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F\s]{4,80})\s+(?:dob|date of birth|जन्म)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if m_name3:
+            name = " ".join(m_name3.group(1).split())
+
+    address = None
+    m_addr = re.search(r"(?:address|पता)\s*[:\-]?\s*([^\n]{8,220})", text, flags=re.IGNORECASE)
+    if m_addr:
+        address = " ".join(m_addr.group(1).split())
+    if not address and aadhaar_number:
+        idx = normalized.find(aadhaar_number[:4])
+        if idx >= 0:
+            tail = normalized[idx + len(aadhaar_number[:4]) :]
+            # Remove immediate number remainder and separators.
+            tail = re.sub(r"^[\s\-:|,./\d]+", "", tail)
+            tail = re.sub(
+                r"\b(?:name|dob|date of birth|gender|aadhaar|uid)\b.*$",
+                "",
+                tail,
+                flags=re.IGNORECASE,
+            ).strip(" ,;")
+            if len(tail) >= 12:
+                address = tail[:180]
 
     return {
         "name": name,
         "aadhaar_number": aadhaar_number,
         "dob": dob,
         "gender": gender,
+        "address": address,
     }
 
 
