@@ -292,10 +292,14 @@ class DocumentService:
             return []
 
     def _extract_fields_with_llm(self, doc_type: str, text: str) -> tuple[list[dict[str, Any]], str]:
-        # Prefer Claude when configured; fallback to Groq.
-        claude_fields = self._extract_fields_with_claude(doc_type, text)
-        if claude_fields:
-            return claude_fields, "claude"
+        # If Claude is configured, use Claude as the LLM extraction backend.
+        if settings.anthropic_api_key.strip():
+            claude_fields = self._extract_fields_with_claude(doc_type, text)
+            if claude_fields:
+                return claude_fields, "claude"
+            return [], "claude"
+
+        # Legacy fallback path when Claude is not configured.
         groq_fields = self._extract_fields_with_groq(doc_type, text)
         if groq_fields:
             return groq_fields, "groq"
@@ -323,6 +327,12 @@ class DocumentService:
             existing_conf = float(existing.get("confidence") or 0.0)
             incoming_val = str(item.get("normalized_value") or "").strip()
             incoming_conf = float(item.get("confidence") or 0.0)
+            incoming_src = str(item.get("source") or "").upper()
+
+            # Claude-assisted extraction takes precedence for segregation/population.
+            if incoming_val and "CLAUDE" in incoming_src:
+                merged[key] = dict(item)
+                continue
             if (not existing_val and incoming_val) or (incoming_val and incoming_conf > existing_conf + 0.15):
                 merged[key] = dict(item)
         return list(merged.values())
