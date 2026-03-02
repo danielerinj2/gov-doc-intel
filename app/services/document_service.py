@@ -327,6 +327,94 @@ class DocumentService:
         )
         return updated
 
+    def save_form_population(
+        self,
+        *,
+        document_id: str,
+        actor_id: str,
+        role: str,
+        document_type: str,
+        populated_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        doc = self.repo.get_document(document_id)
+        if not doc:
+            raise ValueError(f"Document not found: {document_id}")
+
+        doc_type = str(document_type or "OTHER").strip().upper()
+        classification = dict(doc.get("classification_output") or {})
+        classification["doc_type"] = doc_type
+        classification["confidence"] = max(float(classification.get("confidence") or 0.0), 0.7)
+
+        extracted_fields: list[dict[str, Any]] = []
+        for row in populated_rows:
+            field_id = str(row.get("field_id") or "").strip()
+            value = str(row.get("value") or "").strip()
+            if not field_id:
+                continue
+            if not value:
+                continue
+            extracted_fields.append(
+                {
+                    "field_name": field_id,
+                    "normalized_value": value,
+                    "confidence": float(row.get("confidence") or 0.0),
+                    "source": str(row.get("source") or ""),
+                    "validation_state": str(row.get("validation_state") or ""),
+                    "locked": bool(row.get("locked", False)),
+                }
+            )
+
+        validation = validate_fields(doc_type, extracted_fields)
+        fraud = fraud_signals(
+            str(doc.get("ocr_text") or ""),
+            float(classification.get("confidence") or 0.0),
+            validation,
+        )
+        conf = overall_confidence(
+            ocr_confidence=float(doc.get("ocr_confidence") or 0.0),
+            classification_confidence=float(classification.get("confidence") or 0.0),
+            validation_output=validation,
+            fraud_output=fraud,
+        )
+
+        metadata = dict(doc.get("metadata") or {})
+        metadata["form_population"] = {
+            "document_type": doc_type,
+            "updated_at": self._utc_now(),
+            "updated_by": actor_id,
+            "rows": populated_rows,
+        }
+
+        updated = self.repo.update_document(
+            document_id,
+            {
+                "classification_output": classification,
+                "extraction_output": {"fields": extracted_fields},
+                "validation_output": validation,
+                "fraud_output": fraud,
+                "confidence": conf,
+                "risk_score": float(fraud.get("aggregate_fraud_risk_score") or 0.0),
+                "metadata": metadata,
+                "state": "REVIEW_IN_PROGRESS",
+                "last_actor": actor_id,
+                "last_actor_role": role,
+            },
+        )
+
+        self.log_event(
+            document_id=document_id,
+            actor_id=actor_id,
+            actor_role=role,
+            event_type="document.form_population_saved",
+            payload={
+                "document_type": doc_type,
+                "row_count": len(populated_rows),
+                "filled_count": len([r for r in populated_rows if str(r.get("value") or "").strip()]),
+            },
+            tenant_id=str(doc.get("tenant_id") or self.default_tenant_id),
+        )
+        return updated
+
     def decide_document(
         self,
         document_id: str,
