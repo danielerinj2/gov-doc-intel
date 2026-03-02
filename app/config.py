@@ -78,6 +78,8 @@ class Settings:
 
     issuer_registry_base_url: str = _secret_lookup("ISSUER_REGISTRY_BASE_URL")
     issuer_registry_token: str = _secret_lookup("ISSUER_REGISTRY_TOKEN")
+    groq_api_key: str = _secret_lookup("GROQ_API_KEY")
+    groq_model: str = _secret_lookup("GROQ_MODEL") or "llama-3.1-70b-versatile"
 
     sendgrid_api_key: str = _secret_lookup("SENDGRID_API_KEY")
     sendgrid_from_email: str = _secret_lookup("SENDGRID_FROM_EMAIL")

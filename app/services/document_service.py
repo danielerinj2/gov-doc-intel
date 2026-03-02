@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import requests
+
 from app.config import settings
 from app.infra.ocr_adapter import OCRAdapter
 from app.infra.repositories import DocumentRepository, build_repository
@@ -82,6 +84,114 @@ class DocumentService:
             except Exception:
                 return ""
         return ""
+
+    def _llm_field_keys_for_doc_type(self, doc_type: str) -> list[str]:
+        dt = str(doc_type or "OTHER").upper()
+        mapping = {
+            "AADHAAR_CARD": ["name", "dob", "gender", "aadhaar_number", "address"],
+            "PAN_CARD": ["name", "father_name", "dob", "pan_number"],
+            "INCOME_CERTIFICATE": ["name", "certificate_number", "annual_income", "issuing_authority", "issue_date"],
+            "CASTE_CERTIFICATE": ["name", "caste", "certificate_number", "issuing_authority"],
+            "DOMICILE_CERTIFICATE": ["name", "address", "certificate_number"],
+            "LAND_RECORD": ["owner_name", "survey_number", "village"],
+            "BIRTH_CERTIFICATE": ["name", "dob", "registration_number"],
+            "DEATH_CERTIFICATE": ["name", "date_of_death", "registration_number"],
+            "RATION_CARD": ["head_name", "ration_card_number", "address"],
+            "MARRIAGE_CERTIFICATE": ["spouse_1_name", "spouse_2_name", "marriage_date"],
+            "BONAFIDE_CERTIFICATE": ["student_name", "institution", "certificate_number"],
+            "DISABILITY_CERTIFICATE": ["name", "disability_type", "disability_percent"],
+            "BANK_PASSBOOK": ["account_holder_name", "account_number", "ifsc_code", "bank_name"],
+        }
+        return mapping.get(dt, ["name", "reference_number", "dob", "address"])
+
+    def _extract_fields_with_groq(self, doc_type: str, text: str) -> list[dict[str, Any]]:
+        if not settings.groq_api_key.strip():
+            return []
+        content = str(text or "").strip()
+        if not content:
+            return []
+
+        keys = self._llm_field_keys_for_doc_type(doc_type)
+        prompt = (
+            "Extract fields from OCR text for Indian government documents.\n"
+            f"Document type: {doc_type}\n"
+            f"Target field keys: {keys}\n"
+            "Return ONLY compact JSON object with these keys. "
+            "Unknown values must be empty string. Preserve value exactly."
+        )
+
+        body = {
+            "model": settings.groq_model,
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": "You are an information extraction engine. Output valid JSON only."},
+                {"role": "user", "content": f"{prompt}\n\nOCR_TEXT:\n{content[:16000]}"},
+            ],
+        }
+
+        try:
+            res = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.groq_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=20,
+            )
+            if res.status_code >= 400:
+                return []
+            payload = res.json() or {}
+            raw = (
+                (((payload.get("choices") or [{}])[0].get("message") or {}).get("content"))
+                or "{}"
+            )
+            parsed = json.loads(str(raw))
+            if not isinstance(parsed, dict):
+                return []
+            out: list[dict[str, Any]] = []
+            for k in keys:
+                v = str(parsed.get(k, "") or "").strip()
+                if not v:
+                    continue
+                out.append(
+                    {
+                        "field_name": k,
+                        "normalized_value": v,
+                        "confidence": 0.78,
+                        "source": "LLM_ASSISTED",
+                    }
+                )
+            return out
+        except Exception:
+            return []
+
+    def _merge_extracted_fields(
+        self,
+        base_fields: list[dict[str, Any]],
+        llm_fields: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for item in base_fields:
+            key = str(item.get("field_name") or "").strip().lower()
+            if key:
+                merged[key] = dict(item)
+        for item in llm_fields:
+            key = str(item.get("field_name") or "").strip().lower()
+            if not key:
+                continue
+            existing = merged.get(key)
+            if not existing:
+                merged[key] = dict(item)
+                continue
+            existing_val = str(existing.get("normalized_value") or "").strip()
+            existing_conf = float(existing.get("confidence") or 0.0)
+            incoming_val = str(item.get("normalized_value") or "").strip()
+            incoming_conf = float(item.get("confidence") or 0.0)
+            if (not existing_val and incoming_val) or (incoming_val and incoming_conf > existing_conf + 0.15):
+                merged[key] = dict(item)
+        return list(merged.values())
 
     def create_document(
         self,
@@ -228,6 +338,9 @@ class DocumentService:
             classification["confidence"] = max(float(classification.get("confidence") or 0.0), 0.7)
 
         extraction = extract_fields(str(classification.get("doc_type") or "OTHER"), merged_text)
+        llm_fields = self._extract_fields_with_groq(str(classification.get("doc_type") or "OTHER"), merged_text)
+        if llm_fields:
+            extraction = {"fields": self._merge_extracted_fields(list(extraction.get("fields") or []), llm_fields)}
         validation = validate_fields(str(classification.get("doc_type") or "OTHER"), extraction.get("fields", []))
         fraud = fraud_signals(merged_text, float(classification.get("confidence") or 0.0), validation)
 
@@ -244,6 +357,16 @@ class DocumentService:
             decision = "APPROVE"
             state = "APPROVED"
 
+        metadata = dict(doc.get("metadata") or {})
+        metadata["ocr_tokens"] = [
+            {"text": str(w), "bbox": b, "confidence": c}
+            for w, b, c in zip(
+                list(ocr_result.words or [])[:600],
+                list(ocr_result.bbox or [])[:600],
+                list(ocr_result.line_confidence or [])[:600],
+            )
+        ]
+        metadata["llm_extraction_used"] = bool(llm_fields)
         updated = self.repo.update_document(
             document_id,
             {
@@ -259,6 +382,7 @@ class DocumentService:
                 "risk_score": float(fraud.get("aggregate_fraud_risk_score") or 0.0),
                 "decision": decision,
                 "state": state,
+                "metadata": metadata,
                 "processed_at": self._utc_now(),
                 "last_actor": actor_id,
                 "last_actor_role": role,
@@ -276,6 +400,7 @@ class DocumentService:
                 "doc_type": classification.get("doc_type"),
                 "confidence": conf,
                 "risk_score": updated.get("risk_score"),
+                "llm_extraction_used": bool(llm_fields),
             },
             tenant_id=str(doc.get("tenant_id") or self.default_tenant_id),
         )

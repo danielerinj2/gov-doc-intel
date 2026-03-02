@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from PIL import Image, ImageDraw
 
 from app.config import settings
 from app.infra.repositories import (
@@ -271,6 +272,48 @@ def _build_form_population_rows(selected_doc: dict[str, Any], document_type: str
     return rows
 
 
+def _find_focus_bbox(selected_doc: dict[str, Any], value: str) -> list[float] | None:
+    val = str(value or "").strip().lower()
+    if not val:
+        return None
+    tokens = (((selected_doc.get("metadata") or {}).get("ocr_tokens")) or [])
+    if not isinstance(tokens, list):
+        return None
+
+    target_parts = [p for p in re.split(r"\s+", val) if p]
+    matched: list[list[float]] = []
+    for tok in tokens:
+        if not isinstance(tok, dict):
+            continue
+        t = str(tok.get("text") or "").strip().lower()
+        bbox = tok.get("bbox")
+        if not t or not isinstance(bbox, list) or len(bbox) != 4:
+            continue
+        if t in val or any(part in t for part in target_parts):
+            try:
+                matched.append([float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])])
+            except Exception:
+                continue
+    if not matched:
+        return None
+    x1 = min(b[0] for b in matched)
+    y1 = min(b[1] for b in matched)
+    x2 = max(b[2] for b in matched)
+    y2 = max(b[3] for b in matched)
+    return [x1, y1, x2, y2]
+
+
+def _field_section(field_id: str) -> str:
+    fid = _norm_key(field_id)
+    if any(k in fid for k in ["name", "dob", "gender", "father", "spouse", "owner", "student", "head"]):
+        return "Personal Details"
+    if any(k in fid for k in ["address", "village", "city", "district", "state", "pin"]):
+        return "Address"
+    if any(k in fid for k in ["expiry", "issue_date", "valid", "date"]):
+        return "Validity"
+    return "Document Details"
+
+
 @st.cache_resource
 def get_service() -> DocumentService:
     return DocumentService()
@@ -483,7 +526,7 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
 
 
 def _render_structured_fields(service: DocumentService, actor_id: str, role: str) -> None:
-    st.markdown("### 3) Document Classification")
+    st.markdown("### 3) Verification Workspace")
     docs = service.list_documents(limit=500)
     if not docs:
         st.info("No processed documents yet. Upload and process a document first.")
@@ -508,7 +551,6 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
     selected_doc: dict[str, Any]
     if lock_latest and target_id and target_id in by_id:
         selected_doc = by_id[target_id]
-        st.caption(f"Locked to: `{target_id}`")
     else:
         default_idx = 0
         if target_id:
@@ -531,7 +573,6 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
     detected_doc_type = str(cls.get("doc_type") or "OTHER").upper()
     if detected_doc_type not in FORM_SCHEMAS:
         detected_doc_type = "OTHER"
-
     schema_types = sorted(FORM_SCHEMAS.keys())
     selected_doc_type = st.selectbox(
         "Detected document type (override if incorrect)",
@@ -540,200 +581,289 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
         key=f"workspace_doc_type_{doc_id}",
     )
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Detected Type", detected_doc_type)
-    c2.metric("Selected Type", selected_doc_type)
-    c3.metric("Classification Conf.", f"{float(cls.get('confidence') or 0.0):.2f}")
-    c4.metric("Pipeline Confidence", f"{float(selected_doc.get('confidence') or 0.0):.2f}")
-
-    c5, c6 = st.columns(2)
-    c5.metric("State", selected_doc.get("state", "UNKNOWN"))
-    c6.metric("Decision", selected_doc.get("decision") or "PENDING")
-
-    if cls:
-        with st.expander("Classification details", expanded=False):
-            st.json(cls)
-
-    st.markdown("### 4) OCR Data -> Form Population Engine")
     rows = _build_form_population_rows(selected_doc, selected_doc_type)
-    population_df = pd.DataFrame(rows)
+    row_by_id = {str(r.get("field_id")): r for r in rows}
+    focus_options = [str(r.get("field_id")) for r in rows]
+    if not focus_options:
+        st.info("No fields in selected schema.")
+        return
 
-    edited = st.data_editor(
-        population_df,
-        use_container_width=True,
-        num_rows="fixed",
-        key=f"workspace_form_population_{doc_id}",
-        disabled=[
-            "field_id",
-            "label",
-            "ocr_value",
-            "confidence",
-            "confidence_badge",
-            "source",
-            "validation_state",
-            "mandatory",
-        ],
-    )
+    z1, z2, z3 = st.columns([4, 3.5, 2.5], gap="large")
 
-    schema_by_id = {str(f["field_id"]): f for f in FORM_SCHEMAS.get(selected_doc_type, FORM_SCHEMAS["OTHER"])}
-    resolved_rows: list[dict[str, Any]] = []
-    for row in edited.to_dict(orient="records"):
-        field_id = str(row.get("field_id") or "")
-        schema_field = schema_by_id.get(field_id, {"mandatory": False, "type": "text"})
-        value = str(row.get("value") or "")
-        ocr_value = str(row.get("ocr_value") or "")
-        confidence = float(row.get("confidence") or 0.0)
-        source = "OCR Auto-filled" if value and value == ocr_value else "Operator Entered" if value else "Missing"
-        if value.strip().upper() == "NOT_PRESENT":
-            source = "Operator Marked Not Present"
-        validation_state = _validate_form_value(schema_field, value)
-        resolved_rows.append(
-            {
-                "field_id": field_id,
-                "label": str(row.get("label") or field_id),
-                "value": value,
-                "ocr_value": ocr_value,
-                "confidence": round(confidence, 3),
-                "confidence_badge": _confidence_band(confidence),
-                "source": source,
-                "validation_state": validation_state,
-                "mandatory": bool(row.get("mandatory", False)),
-                "locked": bool(row.get("locked", False)),
-            }
+    with z2:
+        st.markdown("#### Smart Form")
+        focus_field_id = st.selectbox(
+            "Focus field",
+            options=focus_options,
+            index=0,
+            format_func=lambda fid: str(row_by_id.get(fid, {}).get("label") or fid),
+            key=f"focus_field_{doc_id}",
         )
 
-    preview_df = pd.DataFrame(resolved_rows)
-    st.markdown("#### Population Preview")
-    st.dataframe(
-        preview_df[["field_id", "label", "value", "confidence_badge", "source", "validation_state", "mandatory", "locked"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    missing_mandatory = [
-        r["field_id"]
-        for r in resolved_rows
-        if bool(r.get("mandatory")) and str(r.get("value") or "").strip() == ""
-    ]
-    not_present_mandatory = [
-        r["field_id"]
-        for r in resolved_rows
-        if bool(r.get("mandatory")) and str(r.get("value") or "").strip().upper() == "NOT_PRESENT"
-    ]
-    if missing_mandatory:
-        st.error(f"Mandatory fields missing: {', '.join(missing_mandatory)}")
-    if not_present_mandatory:
-        st.warning(
-            "Mandatory fields marked NOT_PRESENT (supervisor sign-off required): "
-            + ", ".join(not_present_mandatory)
-        )
-
-    citizen_id = str(selected_doc.get("citizen_id") or "")
-    if citizen_id:
-        key_fields = {"name", "dob", "aadhaar_number", "pan_number"}
-        current_map = {
-            _norm_key(r["field_id"]): str(r.get("value") or "").strip()
-            for r in resolved_rows
-            if _norm_key(r["field_id"]) in key_fields and str(r.get("value") or "").strip()
+        updated_rows: list[dict[str, Any]] = []
+        schema_by_id = {str(f["field_id"]): f for f in FORM_SCHEMAS.get(selected_doc_type, FORM_SCHEMAS["OTHER"])}
+        sections = ["Personal Details", "Document Details", "Address", "Validity"]
+        color_map = {
+            "PASS": "#2e7d32",
+            "EMPTY": "#607d8b",
+            "MISSING": "#c62828",
+            "FAIL_FORMAT": "#ef6c00",
+            "FAIL_DATE": "#ef6c00",
+            "FAIL_NUMBER": "#ef6c00",
+            "FAIL_MIN": "#ef6c00",
+            "FAIL_MAX": "#ef6c00",
+            "FLAGGED_NOT_PRESENT": "#8e24aa",
         }
-        mismatches: list[dict[str, Any]] = []
-        for other in docs:
-            if str(other.get("id")) == doc_id:
-                continue
-            if str(other.get("citizen_id") or "") != citizen_id:
-                continue
-            ofields = (other.get("extraction_output") or {}).get("fields") or []
-            other_map = {
-                _norm_key(f.get("field_name")): str(f.get("normalized_value") or "").strip()
-                for f in ofields
-                if isinstance(f, dict)
-            }
-            for k, v in current_map.items():
-                ov = other_map.get(k, "")
-                if ov and ov != v:
-                    mismatches.append(
-                        {
-                            "field_id": k,
-                            "current_document": v,
-                            "other_document": ov,
-                            "other_document_id": str(other.get("id")),
-                        }
-                    )
-        if mismatches:
-            with st.expander("Cross-document reconciliation alerts", expanded=False):
-                st.dataframe(pd.DataFrame(mismatches), use_container_width=True, hide_index=True)
 
-    notes = st.text_area("Reviewer Notes", height=100, key=f"workspace_review_notes_{doc_id}")
-    a1, a2, a3 = st.columns(3)
-    with a1:
-        if st.button("Save Populated Form", use_container_width=True, key=f"workspace_save_pop_{doc_id}"):
-            if missing_mandatory:
-                st.error("Cannot save: mandatory fields are missing.")
-            else:
+        for section in sections:
+            section_rows = [r for r in rows if _field_section(str(r.get("field_id"))) == section]
+            if not section_rows:
+                continue
+            st.markdown(f"**{section}**")
+            for r in section_rows:
+                field_id = str(r.get("field_id"))
+                schema_field = schema_by_id.get(field_id, {"mandatory": False, "type": "text"})
+                k_val = f"smart_val_{doc_id}_{field_id}"
+                k_lock = f"smart_lock_{doc_id}_{field_id}"
+                if k_val not in st.session_state:
+                    st.session_state[k_val] = str(r.get("value") or "")
+                if k_lock not in st.session_state:
+                    st.session_state[k_lock] = bool(r.get("locked", False))
+
+                value = st.text_input(str(r.get("label") or field_id), key=k_val, disabled=bool(st.session_state[k_lock]))
+                lock_col, meta_col = st.columns([1, 3])
+                with lock_col:
+                    st.checkbox("Lock", key=k_lock)
+                with meta_col:
+                    source = "OCR Auto-filled" if value and value == str(r.get("ocr_value") or "") else "Operator Entered" if value else "Missing"
+                    if str(value).strip().upper() == "NOT_PRESENT":
+                        source = "Operator Marked Not Present"
+                    validation_state = _validate_form_value(schema_field, value)
+                    badge = _confidence_band(float(r.get("confidence") or 0.0))
+                    color = color_map.get(validation_state, "#2e7d32")
+                    st.markdown(
+                        f"<div style='border-left:4px solid {color};padding-left:0.45rem;margin-bottom:0.4rem'>"
+                        f"<small>Confidence: <b>{badge}</b> · Source: <b>{source}</b> · Validation: <b>{validation_state}</b></small>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                updated_rows.append(
+                    {
+                        "field_id": field_id,
+                        "label": str(r.get("label") or field_id),
+                        "value": str(value or ""),
+                        "ocr_value": str(r.get("ocr_value") or ""),
+                        "confidence": float(r.get("confidence") or 0.0),
+                        "confidence_badge": badge,
+                        "source": source,
+                        "validation_state": validation_state,
+                        "mandatory": bool(r.get("mandatory", False)),
+                        "locked": bool(st.session_state[k_lock]),
+                    }
+                )
+
+        total = len(updated_rows)
+        confirmed = len(
+            [
+                r for r in updated_rows
+                if r["validation_state"] == "PASS"
+                or (not bool(r.get("mandatory")) and r["validation_state"] in {"EMPTY", "PASS"})
+            ]
+        )
+        st.progress(confirmed / max(1, total))
+        st.caption(f"{confirmed} of {total} fields confirmed")
+
+        missing_mandatory = [
+            r["field_id"] for r in updated_rows if bool(r.get("mandatory")) and str(r.get("value") or "").strip() == ""
+        ]
+        if missing_mandatory:
+            st.error(f"Mandatory fields missing: {', '.join(missing_mandatory)}")
+
+        notes = st.text_area("Reviewer Notes", height=90, key=f"workspace_review_notes_{doc_id}")
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            if st.button("Approve", use_container_width=True, key=f"workspace_approve_{doc_id}"):
+                if missing_mandatory:
+                    st.error("Cannot approve: fill mandatory fields first.")
+                else:
+                    try:
+                        out = service.save_form_population(
+                            document_id=doc_id,
+                            actor_id=actor_id,
+                            role=role,
+                            document_type=selected_doc_type,
+                            populated_rows=updated_rows,
+                        )
+                        out = service.decide_document(
+                            doc_id,
+                            actor_id=actor_id,
+                            role=role,
+                            decision="APPROVE",
+                            notes=notes.strip() or None,
+                        )
+                        st.session_state["last_processed_doc"] = out
+                        st.success(f"Decision: {out.get('decision')}")
+                    except Exception as exc:
+                        st.error(str(exc))
+        with b2:
+            if st.button("Flag", use_container_width=True, key=f"workspace_flag_{doc_id}"):
                 try:
                     out = service.save_form_population(
                         document_id=doc_id,
                         actor_id=actor_id,
                         role=role,
                         document_type=selected_doc_type,
-                        populated_rows=resolved_rows,
+                        populated_rows=updated_rows,
+                    )
+                    service.log_event(
+                        document_id=doc_id,
+                        actor_id=actor_id,
+                        actor_role=role,
+                        event_type="document.flagged",
+                        payload={"notes": notes.strip() or None},
+                        tenant_id=str(out.get("tenant_id") or ""),
                     )
                     st.session_state["last_processed_doc"] = out
-                    st.success(f"Saved form population. State: {out.get('state')}")
+                    st.warning("Document flagged for manual/senior review.")
                 except Exception as exc:
                     st.error(str(exc))
-    with a2:
-        if st.button("Approve", use_container_width=True, key=f"workspace_approve_{doc_id}"):
-            if missing_mandatory:
-                st.error("Cannot approve: fill mandatory fields first.")
-            else:
+        with b3:
+            if st.button("Reject", use_container_width=True, key=f"workspace_reject_{doc_id}"):
                 try:
+                    out = service.save_form_population(
+                        document_id=doc_id,
+                        actor_id=actor_id,
+                        role=role,
+                        document_type=selected_doc_type,
+                        populated_rows=updated_rows,
+                    )
                     out = service.decide_document(
                         doc_id,
                         actor_id=actor_id,
                         role=role,
-                        decision="APPROVE",
+                        decision="REJECT",
                         notes=notes.strip() or None,
                     )
-                    st.success(f"Decision: {out.get('decision')}")
+                    st.session_state["last_processed_doc"] = out
+                    st.warning(f"Decision: {out.get('decision')}")
                 except Exception as exc:
                     st.error(str(exc))
-    with a3:
-        if st.button("Reject", use_container_width=True, key=f"workspace_reject_{doc_id}"):
+
+        st.download_button(
+            "Save & Export JSON",
+            data=service.export_document_json(doc_id),
+            file_name=f"{doc_id}.json",
+            mime="application/json",
+            use_container_width=True,
+            key=f"workspace_export_{doc_id}",
+        )
+
+    with z1:
+        st.markdown("#### Document Viewer")
+        file_path = str(selected_doc.get("file_path") or "")
+        if not file_path:
+            ingestion = ((selected_doc.get("metadata") or {}).get("ingestion") or {})
+            file_path = str(ingestion.get("original_file_uri") or "")
+        focus_row = row_by_id.get(st.session_state.get(f"focus_field_{doc_id}", focus_options[0]), row_by_id[focus_options[0]])
+        focus_value = str(focus_row.get("value") or "")
+        bbox = _find_focus_bbox(selected_doc, focus_value)
+
+        if file_path and Path(file_path).exists() and Path(file_path).suffix.lower() in {".png", ".jpg", ".jpeg"}:
             try:
-                out = service.decide_document(
-                    doc_id,
-                    actor_id=actor_id,
-                    role=role,
-                    decision="REJECT",
-                    notes=notes.strip() or None,
-                )
-                st.warning(f"Decision: {out.get('decision')}")
-            except Exception as exc:
-                st.error(str(exc))
+                image = Image.open(file_path).convert("RGB")
+                if bbox:
+                    draw = ImageDraw.Draw(image)
+                    draw.rectangle([(bbox[0], bbox[1]), (bbox[2], bbox[3])], outline="#ff1744", width=5)
+                st.image(image, use_container_width=True)
+                if bbox:
+                    st.caption(f"Focused field highlighted: {focus_row.get('label')}")
+            except Exception:
+                st.image(file_path, use_container_width=True)
+        elif file_path and Path(file_path).suffix.lower() == ".pdf":
+            st.info("PDF preview not rendered inline in this build. OCR + form data are still available.")
+        else:
+            st.info("Source document preview unavailable.")
 
-    st.download_button(
-        "Save & Export JSON",
-        data=service.export_document_json(doc_id),
-        file_name=f"{doc_id}.json",
-        mime="application/json",
-        use_container_width=True,
-        key=f"workspace_export_{doc_id}",
-    )
+        fraud = selected_doc.get("fraud_output") or {}
+        st.write(
+            {
+                "stamp_detected": bool(fraud.get("stamp_present")),
+                "signature_detected": bool(fraud.get("signature_present")),
+            }
+        )
 
-    with st.expander("Audit Logs", expanded=False):
-        events = service.list_audit_events(document_id=doc_id, limit=500)
-        reviews = service.list_reviews(document_id=doc_id)
-        st.markdown("**Audit Events**")
+    with z3:
+        st.markdown("#### Integrity & Audit")
+        fraud = selected_doc.get("fraud_output") or {}
+        risk_level = str(fraud.get("risk_level") or "UNKNOWN").upper()
+        checklist = [
+            ("Stamp", bool(fraud.get("stamp_present")), "ok"),
+            ("Signature", bool(fraud.get("signature_present")), "ok"),
+            ("Expiry", False, "warn"),
+            ("Duplicate", False, "ok"),
+            ("Tamper", risk_level not in {"HIGH"}, "warn" if risk_level in {"HIGH", "MEDIUM"} else "ok"),
+        ]
+        phash = str((((selected_doc.get("metadata") or {}).get("ingestion") or {}).get("perceptual_hash") or ""))
+        if phash:
+            dup_count = 0
+            for d in docs:
+                if str(d.get("id")) == doc_id:
+                    continue
+                iph = str((((d.get("metadata") or {}).get("ingestion") or {}).get("perceptual_hash") or ""))
+                if iph and iph == phash:
+                    dup_count += 1
+            if dup_count > 0:
+                checklist[3] = ("Duplicate", False, "warn")
+            else:
+                checklist[3] = ("Duplicate", True, "ok")
+
+        for name, ok, level in checklist:
+            icon = "✓" if ok else "⚠"
+            color = "#2e7d32" if ok and level == "ok" else "#ef6c00" if level == "warn" else "#c62828"
+            st.markdown(f"<div style='color:{color};font-weight:600'>{icon} {name}</div>", unsafe_allow_html=True)
+
+        st.markdown("**Timeline**")
+        events = service.list_audit_events(document_id=doc_id, limit=20)
         if events:
-            st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
+            for e in events[:10]:
+                ts = str(e.get("created_at") or "")[:19].replace("T", " ")
+                et = str(e.get("event_type") or "")
+                st.caption(f"{ts} · {et}")
         else:
-            st.info("No audit events yet.")
-        st.markdown("**Review Decisions**")
-        if reviews:
-            st.dataframe(pd.DataFrame(reviews), use_container_width=True, hide_index=True)
-        else:
-            st.info("No review decisions yet.")
+            st.caption("No events yet.")
+
+        citizen_id = str(selected_doc.get("citizen_id") or "")
+        key_fields = {"name", "dob", "aadhaar_number", "pan_number"}
+        current_map = {
+            _norm_key(r["field_id"]): str(r.get("value") or "").strip()
+            for r in rows
+            if _norm_key(r["field_id"]) in key_fields and str(r.get("value") or "").strip()
+        }
+        mismatch_count = 0
+        matched_count = 0
+        if citizen_id and current_map:
+            for other in docs:
+                if str(other.get("id")) == doc_id:
+                    continue
+                if str(other.get("citizen_id") or "") != citizen_id:
+                    continue
+                ofields = (other.get("extraction_output") or {}).get("fields") or []
+                other_map = {
+                    _norm_key(f.get("field_name")): str(f.get("normalized_value") or "").strip()
+                    for f in ofields
+                    if isinstance(f, dict)
+                }
+                for k, v in current_map.items():
+                    ov = other_map.get(k)
+                    if not ov:
+                        continue
+                    if ov == v:
+                        matched_count += 1
+                    else:
+                        mismatch_count += 1
+        st.markdown("**Cross-document reconciliation**")
+        st.caption(f"Matched: {matched_count} · Mismatched: {mismatch_count}")
 
 
 def _build_doc_label(doc: dict[str, Any]) -> str:
@@ -869,6 +999,7 @@ def _render_system(service: DocumentService, auth_service: AuthService) -> None:
         {
             "APP_ENV": settings.app_env,
             "OCR_BACKEND": settings.ocr_backend,
+            "GROQ_CONFIGURED": bool(settings.groq_api_key.strip()),
             "SUPABASE_URL_VALID": settings.supabase_url_valid(),
             "SUPABASE_KEY_PRESENT": settings.supabase_key_present(),
             "APPWRITE_CONFIGURED": settings.appwrite_configured(),
