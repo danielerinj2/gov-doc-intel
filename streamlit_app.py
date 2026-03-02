@@ -283,9 +283,6 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
             st.text_area("OCR Text", value=ocr_text, height=220, disabled=True)
         else:
             st.warning("OCR returned empty text for this file. Try a clearer scan/image or re-run processing.")
-        if st.button("Open Structured Fields Below", use_container_width=True):
-            st.session_state["review_doc_target_id"] = str(last_processed.get("id") or "")
-            st.rerun()
 
 
 def _render_structured_fields(service: DocumentService, actor_id: str, role: str) -> None:
