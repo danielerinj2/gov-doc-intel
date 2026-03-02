@@ -54,6 +54,7 @@ class DocumentService:
         file_name: str,
         file_hash: str,
         source: str,
+        file_uri: str | None = None,
     ) -> dict[str, Any]:
         out = dict(metadata)
         ingestion = dict(out.get("ingestion") or {})
@@ -62,6 +63,8 @@ class DocumentService:
         ingestion.setdefault("perceptual_hash", file_hash)
         ingestion.setdefault("source", source)
         ingestion.setdefault("original_file_name", file_name)
+        if file_uri:
+            ingestion.setdefault("original_file_uri", file_uri)
         out["ingestion"] = ingestion
         return out
 
@@ -110,6 +113,7 @@ class DocumentService:
             file_name=file_name,
             file_hash=file_hash,
             source=source,
+            file_uri=file_path,
         )
         metadata["script_hint"] = script_hint
         metadata["doc_type_hint"] = doc_type_hint
@@ -151,14 +155,48 @@ class DocumentService:
         )
         return row
 
+    def _resolve_document_file_path(self, doc: dict[str, Any]) -> tuple[str, bool]:
+        direct = str(doc.get("file_path") or "").strip()
+        if direct:
+            return direct, False
+
+        metadata = dict(doc.get("metadata") or {})
+        ingestion = dict(metadata.get("ingestion") or {})
+        fallback_uri = str(ingestion.get("original_file_uri") or "").strip()
+        if fallback_uri:
+            return fallback_uri, True
+
+        raw_text = str(doc.get("raw_text") or "").strip()
+        if raw_text:
+            doc_id = str(doc.get("id") or uuid4())
+            fallback_txt = self.upload_dir / f"{doc_id}_recovered.txt"
+            fallback_txt.write_text(raw_text, encoding="utf-8")
+            return str(fallback_txt), True
+
+        return "", False
+
     def process_document(self, document_id: str, actor_id: str, role: str) -> dict[str, Any]:
         doc = self.repo.get_document(document_id)
         if not doc:
             raise ValueError(f"Document not found: {document_id}")
 
-        file_path = str(doc.get("file_path") or "")
+        file_path, recovered = self._resolve_document_file_path(doc)
         if not file_path:
-            raise ValueError("Document has no file path")
+            raise ValueError(
+                "Document has no file path. Re-upload this document from Intake so the file URI can be stored."
+            )
+
+        patch_updates: dict[str, Any] = {}
+        if recovered:
+            patch_updates["file_path"] = file_path
+            metadata = dict(doc.get("metadata") or {})
+            ingestion = dict(metadata.get("ingestion") or {})
+            ingestion.setdefault("original_file_uri", file_path)
+            metadata["ingestion"] = ingestion
+            patch_updates["metadata"] = metadata
+            self.repo.update_document(document_id, patch_updates)
+            doc["file_path"] = file_path
+            doc["metadata"] = metadata
 
         suffix = Path(file_path).suffix.lower()
         preprocess_out = {"output_path": file_path, "steps": ["skipped"], "quality_score": 0.5}

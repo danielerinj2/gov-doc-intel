@@ -330,6 +330,9 @@ def _render_review(service: DocumentService, actor_id: str, role: str) -> None:
     with left:
         st.markdown("### Evidence")
         file_path = str(selected_doc.get("file_path") or "")
+        if not file_path:
+            ingestion = ((selected_doc.get("metadata") or {}).get("ingestion") or {})
+            file_path = str(ingestion.get("original_file_uri") or "")
         if file_path and Path(file_path).exists() and Path(file_path).suffix.lower() in {".png", ".jpg", ".jpeg"}:
             st.image(file_path, caption=selected_doc.get("file_name") or "uploaded", use_container_width=True)
         st.text_area("OCR Text", value=str(selected_doc.get("ocr_text") or selected_doc.get("raw_text") or ""), height=220)
