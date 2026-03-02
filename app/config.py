@@ -34,6 +34,7 @@ def _secret_lookup(key: str) -> str:
 @dataclass(frozen=True)
 class Settings:
     app_env: str = _secret_lookup("APP_ENV") or "dev"
+    auth_provider: str = (_secret_lookup("AUTH_PROVIDER") or "supabase").lower()
 
     supabase_url: str = _secret_lookup("SUPABASE_URL")
     supabase_key: str = _secret_lookup("SUPABASE_KEY")
@@ -65,6 +66,11 @@ class Settings:
     supabase_password_reset_redirect_url: str = (
         _secret_lookup("SUPABASE_PASSWORD_RESET_REDIRECT_URL") or "https://govdociq.streamlit.app"
     )
+    appwrite_endpoint: str = _secret_lookup("APPWRITE_ENDPOINT")
+    appwrite_project_id: str = _secret_lookup("APPWRITE_PROJECT_ID")
+    appwrite_project_name: str = _secret_lookup("APPWRITE_PROJECT_NAME")
+    appwrite_api_key: str = _secret_lookup("APPWRITE_API_KEY")
+    appwrite_recovery_redirect_url: str = _secret_lookup("APPWRITE_RECOVERY_REDIRECT_URL") or app_login_url
 
     data_dir: str = _secret_lookup("DATA_DIR") or ".data"
 
@@ -73,6 +79,9 @@ class Settings:
 
     def supabase_key_present(self) -> bool:
         return bool((self.supabase_service_key or self.supabase_key or self.supabase_anon_key).strip())
+
+    def appwrite_configured(self) -> bool:
+        return bool(self.appwrite_endpoint.strip() and self.appwrite_project_id.strip())
 
 
 @lru_cache(maxsize=1)

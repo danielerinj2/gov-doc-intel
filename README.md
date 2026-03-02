@@ -25,6 +25,10 @@ If `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (or `SUPABASE_KEY`) are configured,
 Otherwise it runs with in-memory persistence.
 
 Auth uses Supabase Auth (email/password) and recovery endpoints.
+You can switch auth provider with `AUTH_PROVIDER`:
+
+- `supabase` (default)
+- `appwrite`
 
 ## SendGrid
 
@@ -54,5 +58,12 @@ Use `.env.example` as reference. Primary keys used by app:
 - `OCR_MIN_CONFIDENCE`
 - `CLASSIFIER_BACKEND` (`heuristic`/`layoutlm`/`fusion`)
 - `APP_ENV`
+- `AUTH_PROVIDER`
+
+If using Appwrite auth:
+
+- `APPWRITE_ENDPOINT`
+- `APPWRITE_PROJECT_ID`
+- `APPWRITE_API_KEY` (optional for auth flows)
 
 Advanced classifiers are optional. If `layoutlm` or `fusion` models/artifacts are missing, the app automatically falls back to the heuristic classifier.

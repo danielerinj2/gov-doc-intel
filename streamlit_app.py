@@ -131,9 +131,10 @@ def _continue_local_mode(name: str, email: str = "") -> None:
 def _render_auth_page(auth_service: AuthService) -> None:
     st.title("GovDocIQ Access")
     st.caption("Sign in to access your workspace.")
+    st.caption(f"Auth provider: {auth_service.provider}")
 
     if not auth_service.configured():
-        st.warning("Supabase authentication is unavailable. Continue in local mode.")
+        st.warning(f"{auth_service.provider.capitalize()} authentication is unavailable. Continue in local mode.")
         local_name = st.text_input("Name", key="local_name")
         local_email = st.text_input("Email (optional)", key="local_email")
         if st.button("Continue in Local Mode", use_container_width=True, key="local_continue_btn"):
@@ -421,6 +422,8 @@ def _render_system(service: DocumentService, auth_service: AuthService) -> None:
             "OCR_BACKEND": settings.ocr_backend,
             "SUPABASE_URL_VALID": settings.supabase_url_valid(),
             "SUPABASE_KEY_PRESENT": settings.supabase_key_present(),
+            "APPWRITE_CONFIGURED": settings.appwrite_configured(),
+            "AUTH_PROVIDER": auth_service.provider,
             "AUTH_CONFIGURED": auth_service.configured(),
             "SENDGRID_CONFIGURED": auth_service.email_adapter.configured(),
             "PERSISTENCE": "Supabase" if service.using_supabase else "In-memory",
