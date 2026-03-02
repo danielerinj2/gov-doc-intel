@@ -289,7 +289,7 @@ class SupabaseRESTRepository(DocumentRepository):
 
 def build_repository() -> tuple[DocumentRepository, bool, str | None]:
     client = get_supabase_client()
-    required_cols = "id,ocr_engine,preprocess_output,classification_output,extraction_output,validation_output,fraud_output"
+    required_cols = "id,file_path,ocr_engine,preprocess_output,classification_output,extraction_output,validation_output,fraud_output"
 
     if client is not None:
         try:

@@ -2,6 +2,7 @@
 -- Run this in Supabase SQL Editor.
 
 alter table if exists public.documents
+  add column if not exists file_path text,
   add column if not exists ocr_engine text,
   add column if not exists preprocess_output jsonb,
   add column if not exists classification_output jsonb,
