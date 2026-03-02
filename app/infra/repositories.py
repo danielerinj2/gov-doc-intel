@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import re
+import time
 from threading import RLock
 from typing import Any
 from uuid import uuid4
@@ -360,6 +361,124 @@ class AppwriteRepository(DocumentRepository):
             "Content-Type": "application/json",
         }
 
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        ok_conflict: bool = True,
+    ) -> dict[str, Any]:
+        url = f"{self.endpoint}{path}"
+        res = requests.request(
+            method,
+            url,
+            headers=self._headers(),
+            json=payload,
+            params=params,
+            timeout=25,
+        )
+        if res.status_code == 409 and ok_conflict:
+            return {"conflict": True}
+        if res.status_code >= 400:
+            raise RepositoryError(f"Appwrite {method} {path} failed [{res.status_code}] {res.text[:400]}")
+        if not res.text:
+            return {}
+        try:
+            return res.json() or {}
+        except Exception:
+            return {}
+
+    def _ensure_database(self) -> None:
+        self._request(
+            "POST",
+            "/databases",
+            payload={
+                "databaseId": self.database_id,
+                "name": settings.appwrite_project_name or "GovDocIQ DB",
+                "enabled": True,
+            },
+            ok_conflict=True,
+        )
+
+    def _ensure_collection(self, collection_id: str, name: str) -> None:
+        self._request(
+            "POST",
+            f"/databases/{self.database_id}/collections",
+            payload={
+                "collectionId": collection_id,
+                "name": name,
+                "permissions": [],
+                "documentSecurity": False,
+                "enabled": True,
+            },
+            ok_conflict=True,
+        )
+
+    def _ensure_string_attr(self, collection_id: str, key: str, size: int, required: bool = False) -> None:
+        self._request(
+            "POST",
+            f"/databases/{self.database_id}/collections/{collection_id}/attributes/string",
+            payload={
+                "key": key,
+                "size": size,
+                "required": required,
+                "default": None,
+                "array": False,
+            },
+            ok_conflict=True,
+        )
+
+    def _ensure_schema(self, collection_id: str) -> None:
+        self._ensure_string_attr(collection_id, "doc_id", 64, required=True)
+        self._ensure_string_attr(collection_id, "row_type", 64, required=True)
+        self._ensure_string_attr(collection_id, "tenant_id", 128, required=True)
+        self._ensure_string_attr(collection_id, "document_id", 64, required=False)
+        self._ensure_string_attr(collection_id, "state", 64, required=False)
+        self._ensure_string_attr(collection_id, "decision", 64, required=False)
+        self._ensure_string_attr(collection_id, "created_at", 64, required=True)
+        self._ensure_string_attr(collection_id, "updated_at", 64, required=True)
+        self._ensure_string_attr(collection_id, "data_json", 65535, required=True)
+
+    def _wait_attributes(self, collection_id: str, timeout_sec: int = 60) -> None:
+        started = datetime.now(timezone.utc).timestamp()
+        while (datetime.now(timezone.utc).timestamp() - started) < timeout_sec:
+            out = self._request(
+                "GET",
+                f"/databases/{self.database_id}/collections/{collection_id}/attributes",
+                ok_conflict=False,
+            )
+            attrs = out.get("attributes") or []
+            if attrs and all(str(a.get("status", "")).lower() == "available" for a in attrs):
+                return
+            time.sleep(1.2)
+        raise RepositoryError(f"Timed out waiting for Appwrite attributes: {collection_id}")
+
+    def bootstrap_storage(self) -> None:
+        self._ensure_database()
+        for cid, name in [
+            (self.documents_col, "Documents"),
+            (self.reviews_col, "Reviews"),
+            (self.audit_col, "Audit Events"),
+        ]:
+            self._ensure_collection(cid, name)
+            self._ensure_schema(cid)
+            self._wait_attributes(cid, timeout_sec=60)
+
+    @staticmethod
+    def _is_bootstrap_candidate_error(message: str) -> bool:
+        msg = str(message).lower()
+        return any(
+            k in msg
+            for k in [
+                "database_not_found",
+                "collection_not_found",
+                "attribute_not_found",
+                "could not find",
+            ]
+        )
+
     def _row_to_doc(self, row: dict[str, Any], *, row_type: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
         data = dict(row)
@@ -491,6 +610,14 @@ def build_repository() -> tuple[DocumentRepository, bool, str | None]:
             repo._list_documents(repo.documents_col, limit=1)
             return repo, False, None
         except Exception as exc:
+            try:
+                repo = AppwriteRepository()
+                if repo._is_bootstrap_candidate_error(str(exc)):
+                    repo.bootstrap_storage()
+                    repo._list_documents(repo.documents_col, limit=1)
+                    return repo, False, "Appwrite storage auto-created and ready."
+            except Exception as boot_exc:
+                exc = boot_exc
             return (
                 InMemoryRepository(),
                 False,
