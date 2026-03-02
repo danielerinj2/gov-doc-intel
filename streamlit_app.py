@@ -299,6 +299,12 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
                     f"Processed {processed['id']} | state={processed.get('state')} | "
                     f"doc_type={(processed.get('classification_output') or {}).get('doc_type')}"
                 )
+                ocr_engine = str(processed.get("ocr_engine") or "")
+                if ocr_engine.startswith("paddle-unavailable:"):
+                    st.error(
+                        "OCR engine is unavailable in this runtime. Install OCR dependencies "
+                        "(paddleocr + paddlepaddle) and restart."
+                    )
             except Exception as exc:
                 st.error(str(exc))
 
@@ -358,6 +364,8 @@ def _render_review(service: DocumentService, actor_id: str, role: str) -> None:
         if file_path and Path(file_path).exists() and Path(file_path).suffix.lower() in {".png", ".jpg", ".jpeg"}:
             st.image(file_path, caption=selected_doc.get("file_name") or "uploaded", use_container_width=True)
         st.text_area("OCR Text", value=str(selected_doc.get("ocr_text") or selected_doc.get("raw_text") or ""), height=220)
+        if str(selected_doc.get("ocr_engine") or "").startswith("paddle-unavailable:"):
+            st.error("OCR dependencies are missing in this runtime. Install OCR packages and restart.")
 
         cls = selected_doc.get("classification_output") or {}
         val = selected_doc.get("validation_output") or {}
