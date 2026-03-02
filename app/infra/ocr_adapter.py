@@ -8,11 +8,17 @@ from typing import Any
 
 from app.config import settings
 from app.pipeline.preload import get_ocr_context
+from PIL import Image
 
 try:
     from pypdf import PdfReader
 except Exception:  # pragma: no cover
     PdfReader = None  # type: ignore[assignment]
+
+try:
+    import pytesseract
+except Exception:  # pragma: no cover
+    pytesseract = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -100,6 +106,75 @@ class OCRAdapter:
             )
         except Exception:
             return self._empty("pypdf", self.default_lang)
+
+    def _extract_with_tesseract(self, file_path: str, hint_script: str = "AUTO-DETECT") -> OCRResult:
+        if pytesseract is None:
+            return self._empty("tesseract-unavailable", self.default_lang)
+
+        suffix = Path(file_path).suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}:
+            return self._empty("tesseract-unsupported-format", self.default_lang)
+
+        lang_map = {
+            "AUTO-DETECT": "eng",
+            "Latin (English)": "eng",
+            "Devanagari (Hindi/Marathi/Sanskrit)": "hin+eng",
+            "Bengali": "ben+eng",
+            "Tamil": "tam+eng",
+            "Telugu": "tel+eng",
+            "Kannada": "kan+eng",
+            "Malayalam": "mal+eng",
+            "Gujarati": "guj+eng",
+            "Gurmukhi (Punjabi)": "pan+eng",
+            "Odia": "ori+eng",
+            "Urdu (Nastaliq)": "urd+eng",
+        }
+        lang = lang_map.get(hint_script, "eng")
+
+        try:
+            image = Image.open(file_path).convert("RGB")
+            data = pytesseract.image_to_data(
+                image,
+                output_type=pytesseract.Output.DICT,
+                lang=lang,
+                config="--oem 1 --psm 6",
+            )
+
+            words: list[str] = []
+            bbox: list[list[float]] = []
+            conf: list[float] = []
+            n = len(data.get("text", []))
+            for i in range(n):
+                txt = _normalize_text_preserve_unicode(str(data["text"][i] or ""))
+                try:
+                    sc = float(data.get("conf", ["-1"])[i])
+                except Exception:
+                    sc = -1.0
+                if not txt:
+                    continue
+                if sc >= 0 and (sc / 100.0) < settings.ocr_min_confidence:
+                    continue
+                left = float(data.get("left", [0])[i] or 0)
+                top = float(data.get("top", [0])[i] or 0)
+                width = float(data.get("width", [0])[i] or 0)
+                height = float(data.get("height", [0])[i] or 0)
+                words.append(txt)
+                bbox.append([left, top, left + width, top + height])
+                conf.append(max(0.0, sc / 100.0))
+
+            text = " ".join(words).strip()
+            avg = (sum(conf) / len(conf)) if conf else 0.0
+            return OCRResult(
+                text=text,
+                confidence=float(avg),
+                engine="tesseract",
+                language=lang,
+                words=words,
+                bbox=bbox,
+                line_confidence=conf,
+            )
+        except Exception:
+            return self._empty("tesseract", lang)
 
     def _extract_from_new_predict_api(self, paddle_ocr: Any, file_path: str) -> OCRResult | None:
         try:
@@ -227,6 +302,9 @@ class OCRAdapter:
 
         ctx = get_ocr_context()
         if ctx.ocr is None:
+            fallback = self._extract_with_tesseract(file_path, hint_script=hint_script)
+            if fallback.text:
+                return fallback
             return self._empty(f"paddle-unavailable:{ctx.error or 'not_configured'}", self.default_lang)
 
         # Prefer modern `predict` output when available.
