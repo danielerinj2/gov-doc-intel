@@ -240,6 +240,43 @@ def _extract_value_from_ocr_text(field_schema: dict[str, Any], ocr_text: str) ->
         if m:
             return m.group(1).replace(",", "")
 
+    def _sanitize_candidate(fid: str, candidate: str) -> str:
+        value = " ".join(str(candidate or "").split()).strip(" :-|,.;")
+        if not value:
+            return ""
+
+        marker_re = (
+            r"\b(?:name|dob|date of birth|gender|aadhaar(?:\s*number)?|pan(?:\s*number)?|"
+            r"father(?:'s)?\s*name|s/o|son of|income|valid(?:ity)?|issue(?:\s*date)?|"
+            r"certificate(?:\s*number)?|authority|district|state|pin|mobile|phone)\b"
+        )
+
+        if fid == "address":
+            m = re.search(marker_re, value, flags=re.IGNORECASE)
+            if m and m.start() > 10:
+                value = value[: m.start()].strip(" ,;")
+            return value[:180] if len(value) >= 8 else ""
+
+        if "name" in fid:
+            m = re.search(marker_re, value, flags=re.IGNORECASE)
+            if m and m.start() > 2:
+                value = value[: m.start()].strip()
+            value = re.sub(r"[^A-Za-z\u0900-\u097F\s.'-]", " ", value)
+            return " ".join(value.split())[:80]
+
+        if "date" in fid or fid in {"dob", "date_of_death", "marriage_date"}:
+            m = re.search(r"\b\d{2}[/-]\d{2}[/-]\d{4}\b", value)
+            return m.group(0).replace("-", "/") if m else ""
+
+        if "income" in fid:
+            m = re.search(r"\d[\d,]{2,}", value)
+            return m.group(0).replace(",", "") if m else ""
+
+        m = re.search(marker_re, value, flags=re.IGNORECASE)
+        if m and m.start() > 5:
+            value = value[: m.start()].strip(" ,;")
+        return value[:120]
+
     lines = [ln.strip() for ln in re.split(r"[\r\n]+", text) if ln.strip()]
     for line in lines:
         lower_line = line.lower()
@@ -252,8 +289,9 @@ def _extract_value_from_ocr_text(field_schema: dict[str, Any], ocr_text: str) ->
                 else:
                     idx = lower_line.find(alias_display)
                     candidate = line[idx + len(alias_display) :].strip(" :-|")
-                if candidate:
-                    return candidate
+                cleaned = _sanitize_candidate(field_id, candidate)
+                if cleaned:
+                    return cleaned
 
     if "name" in field_id:
         m = re.search(r"(?:name|नाम)\s*[:\-]\s*([A-Za-z\u0900-\u097F\s]{3,80})", text, flags=re.IGNORECASE)
@@ -262,7 +300,7 @@ def _extract_value_from_ocr_text(field_schema: dict[str, Any], ocr_text: str) ->
     if field_id == "address":
         m = re.search(r"(?:address|पता)\s*[:\-]\s*([^\n]{8,180})", text, flags=re.IGNORECASE)
         if m:
-            return " ".join(m.group(1).split())
+            return _sanitize_candidate(field_id, m.group(1))
 
     return ""
 
@@ -874,17 +912,9 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
             except Exception:
                 st.image(file_path, use_container_width=True)
         elif file_path and Path(file_path).suffix.lower() == ".pdf":
-            st.info("PDF preview not rendered inline in this build. OCR + form data are still available.")
+            st.caption("PDF preview unavailable in this view.")
         else:
-            st.info("Source document preview unavailable.")
-
-        fraud = selected_doc.get("fraud_output") or {}
-        st.write(
-            {
-                "stamp_detected": bool(fraud.get("stamp_present")),
-                "signature_detected": bool(fraud.get("signature_present")),
-            }
-        )
+            st.caption("Source document preview unavailable.")
 
     with z3:
         st.markdown("#### Zone 3 — Integrity & Audit")
