@@ -244,7 +244,6 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
         elif suffix in {".txt", ".csv", ".json"}:
             st.code(uploaded.getvalue().decode("utf-8", errors="ignore")[:2000])
 
-    st.markdown("### 2) Process Action")
     if st.button("Process Document", use_container_width=True, disabled=uploaded is None):
         if not uploaded:
             st.error("Upload a file first.")
@@ -281,7 +280,7 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
 
     last_processed = st.session_state.get("last_processed_doc")
     if isinstance(last_processed, dict):
-        st.markdown("### 3) OCR Output")
+        st.markdown("### 2) OCR Output")
         ocr_text = str(last_processed.get("ocr_text") or "").strip()
         if ocr_text:
             st.text_area("OCR Text", value=ocr_text, height=220, disabled=True)
@@ -293,7 +292,7 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
 
 
 def _render_structured_fields(service: DocumentService, actor_id: str, role: str) -> None:
-    st.markdown("### 4) Structured Document Fields")
+    st.markdown("### 3) Structured Document Fields")
     docs = service.list_documents(limit=500)
     if not docs:
         st.info("No processed documents yet. Upload and process a document first.")
