@@ -66,9 +66,9 @@ class Settings:
     supabase_password_reset_redirect_url: str = (
         _secret_lookup("SUPABASE_PASSWORD_RESET_REDIRECT_URL") or "https://govdociq.streamlit.app"
     )
-    appwrite_endpoint: str = _secret_lookup("APPWRITE_ENDPOINT")
-    appwrite_project_id: str = _secret_lookup("APPWRITE_PROJECT_ID")
-    appwrite_project_name: str = _secret_lookup("APPWRITE_PROJECT_NAME")
+    appwrite_endpoint: str = _secret_lookup("APPWRITE_ENDPOINT") or _secret_lookup("VITE_APPWRITE_ENDPOINT")
+    appwrite_project_id: str = _secret_lookup("APPWRITE_PROJECT_ID") or _secret_lookup("VITE_APPWRITE_PROJECT_ID")
+    appwrite_project_name: str = _secret_lookup("APPWRITE_PROJECT_NAME") or _secret_lookup("VITE_APPWRITE_PROJECT_NAME")
     appwrite_api_key: str = _secret_lookup("APPWRITE_API_KEY")
     appwrite_recovery_redirect_url: str = _secret_lookup("APPWRITE_RECOVERY_REDIRECT_URL") or app_login_url
 
