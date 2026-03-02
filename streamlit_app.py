@@ -242,9 +242,8 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
             st.code(uploaded.getvalue().decode("utf-8", errors="ignore")[:2000])
 
     if st.button("Process Document", use_container_width=True, disabled=uploaded is None):
-        citizen_id = str(st.session_state.get("ingest_citizen_id") or "citizen-001").strip() or "citizen-001"
-        notes_raw = str(st.session_state.get("ingest_operator_notes") or "").strip()
-        notes = notes_raw or None
+        citizen_id = "citizen-001"
+        notes = None
         if not uploaded:
             st.error("Upload a file first.")
         else:
@@ -275,10 +274,6 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
                     )
             except Exception as exc:
                 st.error(str(exc))
-
-    with st.expander("Optional metadata", expanded=False):
-        st.text_input("Citizen ID", value="citizen-001", key="ingest_citizen_id")
-        st.text_area("Operator notes", height=80, key="ingest_operator_notes")
 
     last_processed = st.session_state.get("last_processed_doc")
     if isinstance(last_processed, dict):
