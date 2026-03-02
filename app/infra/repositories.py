@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from threading import RLock
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,15 @@ ROLE_PLATFORM_ADMIN = "platform_admin"
 
 class RepositoryError(RuntimeError):
     pass
+
+
+def _extract_missing_column_name(message: str) -> str | None:
+    # Handles messages like:
+    # "Could not find the 'file_path' column of 'documents' in the schema cache"
+    m = re.search(r"'([^']+)'\\s+column", message)
+    if m:
+        return m.group(1)
+    return None
 
 
 class DocumentRepository:
@@ -136,10 +146,20 @@ class SupabaseRepository(DocumentRepository):
         payload = dict(row)
         if "id" not in payload:
             payload["id"] = str(uuid4())
-        res = self.client.table(table).insert(payload).execute()
-        if not res.data:
-            raise RepositoryError(f"Insert failed for {table}")
-        return dict(res.data[0])
+        # Retry by dropping unknown columns reported by PostgREST schema cache.
+        for _ in range(20):
+            try:
+                res = self.client.table(table).insert(payload).execute()
+                if not res.data:
+                    raise RepositoryError(f"Insert failed for {table}")
+                return dict(res.data[0])
+            except Exception as exc:
+                missing_col = _extract_missing_column_name(str(exc))
+                if missing_col and missing_col in payload:
+                    payload.pop(missing_col, None)
+                    continue
+                raise RepositoryError(f"Insert failed for {table}: {exc}") from exc
+        raise RepositoryError(f"Insert failed for {table}: too many schema-mismatch retries")
 
     def create_document(self, row: dict[str, Any]) -> dict[str, Any]:
         return self._insert_one("documents", row)
@@ -147,10 +167,19 @@ class SupabaseRepository(DocumentRepository):
     def update_document(self, document_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         payload = dict(updates)
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-        res = self.client.table("documents").update(payload).eq("id", document_id).execute()
-        if not res.data:
-            raise RepositoryError(f"Update failed for document {document_id}")
-        return dict(res.data[0])
+        for _ in range(20):
+            try:
+                res = self.client.table("documents").update(payload).eq("id", document_id).execute()
+                if not res.data:
+                    raise RepositoryError(f"Update failed for document {document_id}")
+                return dict(res.data[0])
+            except Exception as exc:
+                missing_col = _extract_missing_column_name(str(exc))
+                if missing_col and missing_col in payload:
+                    payload.pop(missing_col, None)
+                    continue
+                raise RepositoryError(f"Update failed for document {document_id}: {exc}") from exc
+        raise RepositoryError(f"Update failed for document {document_id}: too many schema-mismatch retries")
 
     def get_document(self, document_id: str) -> dict[str, Any] | None:
         res = self.client.table("documents").select("*").eq("id", document_id).limit(1).execute()
@@ -223,23 +252,41 @@ class SupabaseRESTRepository(DocumentRepository):
     def create_document(self, row: dict[str, Any]) -> dict[str, Any]:
         payload = dict(row)
         payload.setdefault("id", str(uuid4()))
-        out = self._rest("POST", "documents", payload=payload)
-        if not out:
-            raise RepositoryError("Insert failed for documents")
-        return out[0]
+        for _ in range(20):
+            try:
+                out = self._rest("POST", "documents", payload=payload)
+                if not out:
+                    raise RepositoryError("Insert failed for documents")
+                return out[0]
+            except Exception as exc:
+                missing_col = _extract_missing_column_name(str(exc))
+                if missing_col and missing_col in payload:
+                    payload.pop(missing_col, None)
+                    continue
+                raise
+        raise RepositoryError("Insert failed for documents: too many schema-mismatch retries")
 
     def update_document(self, document_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         payload = dict(updates)
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-        out = self._rest(
-            "PATCH",
-            "documents",
-            params={"id": f"eq.{document_id}"},
-            payload=payload,
-        )
-        if not out:
-            raise RepositoryError(f"Update failed for document {document_id}")
-        return out[0]
+        for _ in range(20):
+            try:
+                out = self._rest(
+                    "PATCH",
+                    "documents",
+                    params={"id": f"eq.{document_id}"},
+                    payload=payload,
+                )
+                if not out:
+                    raise RepositoryError(f"Update failed for document {document_id}")
+                return out[0]
+            except Exception as exc:
+                missing_col = _extract_missing_column_name(str(exc))
+                if missing_col and missing_col in payload:
+                    payload.pop(missing_col, None)
+                    continue
+                raise
+        raise RepositoryError(f"Update failed for document {document_id}: too many schema-mismatch retries")
 
     def get_document(self, document_id: str) -> dict[str, Any] | None:
         out = self._rest(
@@ -289,7 +336,7 @@ class SupabaseRESTRepository(DocumentRepository):
 
 def build_repository() -> tuple[DocumentRepository, bool, str | None]:
     client = get_supabase_client()
-    required_cols = "id,file_path,ocr_engine,preprocess_output,classification_output,extraction_output,validation_output,fraud_output"
+    required_cols = "id"
 
     if client is not None:
         try:
