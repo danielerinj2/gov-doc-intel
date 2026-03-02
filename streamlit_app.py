@@ -54,13 +54,7 @@ ROLE_META = {
     ROLE_PLATFORM_ADMIN: {"icon": "👑", "label": "Platform Admin", "color": "#ffcc02"},
 }
 
-PAGES = [
-    "🏠 Dashboard",
-    "📥 Intake & Processing",
-    "🔍 Review Workbench",
-    "📋 Audit Logs",
-    "⚙️ System Status",
-]
+PAGES = ["🏠 Unified Workspace"]
 
 SCRIPT_OPTIONS = [
     "AUTO-DETECT",
@@ -256,7 +250,7 @@ def _render_dashboard(service: DocumentService, role: str) -> None:
 
 
 def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> None:
-    st.markdown("### Upload & Process")
+    st.markdown("### 1) Document Setup & Upload")
 
     uploaded = st.file_uploader("Upload document", type=["pdf", "jpg", "jpeg", "png", "txt", "csv", "json"])
     c1, c2 = st.columns(2)
@@ -275,7 +269,8 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
         elif suffix in {".txt", ".csv", ".json"}:
             st.code(uploaded.getvalue().decode("utf-8", errors="ignore")[:2000])
 
-    if st.button("Submit & Process", use_container_width=True, disabled=uploaded is None):
+    st.markdown("### 2) Process Action")
+    if st.button("Process Document", use_container_width=True, disabled=uploaded is None):
         if not uploaded:
             st.error("Upload a file first.")
         elif not citizen_id.strip():
@@ -310,14 +305,13 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
 
     last_processed = st.session_state.get("last_processed_doc")
     if isinstance(last_processed, dict):
-        st.markdown("### Latest OCR Output")
+        st.markdown("### 3) OCR Output")
         ocr_text = str(last_processed.get("ocr_text") or "").strip()
         if ocr_text:
             st.text_area("OCR Text", value=ocr_text, height=220, disabled=True)
         else:
             st.warning("OCR returned empty text for this file. Try a clearer scan/image or re-run processing.")
-        if st.button("Open In Review Workbench", use_container_width=True):
-            st.session_state["_pending_nav_page"] = "🔍 Review Workbench"
+        if st.button("Open Structured Fields Below", use_container_width=True):
             st.session_state["review_doc_target_id"] = str(last_processed.get("id") or "")
             st.rerun()
 
@@ -327,6 +321,117 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
         st.dataframe(pd.DataFrame([_doc_summary_row(d) for d in docs]), use_container_width=True, hide_index=True)
     else:
         st.info("No documents in queue.")
+
+
+def _render_structured_fields(service: DocumentService, actor_id: str, role: str) -> None:
+    st.markdown("### 4) Structured Document Fields")
+    docs = service.list_documents(limit=500)
+    if not docs:
+        st.info("No processed documents yet. Upload and process a document first.")
+        return
+
+    labels = {_build_doc_label(d): d for d in docs}
+    label_list = list(labels.keys())
+
+    target_id = str(st.session_state.get("review_doc_target_id") or "")
+    if not target_id:
+        last_processed = st.session_state.get("last_processed_doc")
+        if isinstance(last_processed, dict):
+            target_id = str(last_processed.get("id") or "")
+
+    default_idx = 0
+    if target_id:
+        for idx, lb in enumerate(label_list):
+            if lb.startswith(f"{target_id} |"):
+                default_idx = idx
+                break
+
+    selected_label = st.selectbox("Selected Document", options=label_list, index=default_idx, key="workspace_doc_select")
+    selected_doc = labels[selected_label]
+    doc_id = str(selected_doc.get("id"))
+    st.session_state["review_doc_target_id"] = doc_id
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("State", selected_doc.get("state", "UNKNOWN"))
+    c2.metric("Decision", selected_doc.get("decision") or "PENDING")
+    c3.metric("Confidence", f"{float(selected_doc.get('confidence') or 0.0):.2f}")
+    c4.metric("Risk", f"{float(selected_doc.get('risk_score') or 0.0):.2f}")
+
+    ocr_text = str(selected_doc.get("ocr_text") or selected_doc.get("raw_text") or "")
+    st.text_area("OCR Text (selected document)", value=ocr_text, height=180, disabled=True, key=f"workspace_ocr_{doc_id}")
+
+    fields = (selected_doc.get("extraction_output") or {}).get("fields") or [
+        {"field_name": "", "normalized_value": "", "confidence": 0.0}
+    ]
+    edited = st.data_editor(
+        pd.DataFrame(fields),
+        use_container_width=True,
+        num_rows="dynamic",
+        key=f"workspace_edit_fields_{doc_id}",
+    )
+    notes = st.text_area("Reviewer Notes", height=100, key=f"workspace_review_notes_{doc_id}")
+
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        if st.button("Save Fields", use_container_width=True, key=f"workspace_save_fields_{doc_id}"):
+            payload = edited.fillna("").to_dict(orient="records")
+            payload = [r for r in payload if str(r.get("field_name", "")).strip()]
+            try:
+                out = service.update_extracted_fields(doc_id, actor_id=actor_id, role=role, fields=payload)
+                st.session_state["last_processed_doc"] = out
+                st.success(f"Saved fields. State: {out.get('state')}")
+            except Exception as exc:
+                st.error(str(exc))
+    with a2:
+        if st.button("Approve", use_container_width=True, key=f"workspace_approve_{doc_id}"):
+            try:
+                out = service.decide_document(
+                    doc_id,
+                    actor_id=actor_id,
+                    role=role,
+                    decision="APPROVE",
+                    notes=notes.strip() or None,
+                )
+                st.success(f"Decision: {out.get('decision')}")
+            except Exception as exc:
+                st.error(str(exc))
+    with a3:
+        if st.button("Reject", use_container_width=True, key=f"workspace_reject_{doc_id}"):
+            try:
+                out = service.decide_document(
+                    doc_id,
+                    actor_id=actor_id,
+                    role=role,
+                    decision="REJECT",
+                    notes=notes.strip() or None,
+                )
+                st.warning(f"Decision: {out.get('decision')}")
+            except Exception as exc:
+                st.error(str(exc))
+
+    export_json = service.export_document_json(doc_id)
+    st.download_button(
+        "Save & Export JSON",
+        data=export_json,
+        file_name=f"{doc_id}.json",
+        mime="application/json",
+        use_container_width=True,
+        key=f"workspace_export_{doc_id}",
+    )
+
+    with st.expander("Audit Logs", expanded=False):
+        events = service.list_audit_events(document_id=doc_id, limit=500)
+        reviews = service.list_reviews(document_id=doc_id)
+        st.markdown("**Audit Events**")
+        if events:
+            st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
+        else:
+            st.info("No audit events yet.")
+        st.markdown("**Review Decisions**")
+        if reviews:
+            st.dataframe(pd.DataFrame(reviews), use_container_width=True, hide_index=True)
+        else:
+            st.info("No review decisions yet.")
 
 
 def _build_doc_label(doc: dict[str, Any]) -> str:
@@ -509,13 +614,6 @@ def main() -> None:
         st.session_state["active_profile"] = active_profile
 
         actor_id = str(user.get("user_id") or user_email or "user-001")
-        pending_nav = st.session_state.pop("_pending_nav_page", None)
-        if pending_nav in PAGES:
-            st.session_state["nav_page"] = pending_nav
-        if "nav_page" not in st.session_state or st.session_state["nav_page"] not in PAGES:
-            st.session_state["nav_page"] = PAGES[0]
-        st.radio("Navigation", PAGES, key="nav_page")
-        page = str(st.session_state.get("nav_page") or PAGES[0])
 
         if st.button("Sign out", use_container_width=True):
             st.session_state["auth_user"] = None
@@ -525,16 +623,12 @@ def main() -> None:
     meta = ROLE_META.get(active_profile, {"icon": "👤", "label": active_profile})
     st.markdown(f"# {meta['icon']} GovDocIQ Workspace")
     st.caption(f"Active profile: {meta['label']} · User: {user_name}")
-
-    if page == "🏠 Dashboard":
-        _render_dashboard(service=service, role=active_profile)
-    elif page == "📥 Intake & Processing":
-        _render_ingestion(service=service, actor_id=actor_id, role=active_profile)
-    elif page == "🔍 Review Workbench":
-        _render_review(service=service, actor_id=actor_id, role=active_profile)
-    elif page == "📋 Audit Logs":
-        _render_audit(service=service)
-    elif page == "⚙️ System Status":
+    _render_dashboard(service=service, role=active_profile)
+    st.divider()
+    _render_ingestion(service=service, actor_id=actor_id, role=active_profile)
+    st.divider()
+    _render_structured_fields(service=service, actor_id=actor_id, role=active_profile)
+    with st.expander("System Status", expanded=False):
         _render_system(service=service, auth_service=auth_service)
 
 
