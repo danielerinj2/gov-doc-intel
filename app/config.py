@@ -4,6 +4,16 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None  # type: ignore[assignment]
+
+
+if load_dotenv is not None:
+    # Ensure local development picks up .env automatically.
+    load_dotenv(override=False)
+
 
 def _secret_lookup(key: str) -> str:
     env_val = os.getenv(key)
