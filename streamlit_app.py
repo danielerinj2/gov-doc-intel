@@ -223,30 +223,29 @@ def _render_dashboard(service: DocumentService, role: str) -> None:
     c3.markdown(_kpi("Approved", len(approved)), unsafe_allow_html=True)
     c4.markdown(_kpi("Rejected", len(rejected)), unsafe_allow_html=True)
 
-    st.markdown("### Profiles")
-    prof_cols = st.columns(len(ALL_ROLES))
-    for col, r in zip(prof_cols, ALL_ROLES):
-        meta = ROLE_META[r]
-        with col:
-            st.markdown(
-                (
-                    '<div class="card">'
-                    f"<div style='font-size:1.4rem'>{meta['icon']}</div>"
-                    f"<div style='font-weight:700'>{meta['label']}</div>"
-                    f"<div style='font-size:0.8rem;color:#4c6186'>{'Current session' if r == role else 'Available profile'}</div>"
-                    "</div>"
-                ),
-                unsafe_allow_html=True,
-            )
+    with st.expander("Workspace Overview", expanded=False):
+        st.markdown("#### Profiles")
+        prof_cols = st.columns(len(ALL_ROLES))
+        for col, r in zip(prof_cols, ALL_ROLES):
+            meta = ROLE_META[r]
+            with col:
+                st.markdown(
+                    (
+                        '<div class="card">'
+                        f"<div style='font-size:1.4rem'>{meta['icon']}</div>"
+                        f"<div style='font-weight:700'>{meta['label']}</div>"
+                        f"<div style='font-size:0.8rem;color:#4c6186'>{'Current session' if r == role else 'Available profile'}</div>"
+                        "</div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
 
-    st.markdown("### Recent Documents")
-    if docs:
-        df = pd.DataFrame([_doc_summary_row(d) for d in docs])
-        st.dataframe(df.head(20), use_container_width=True, hide_index=True)
-        counts = df["state"].fillna("UNKNOWN").value_counts().rename_axis("state").reset_index(name="count")
-        st.bar_chart(counts.set_index("state"))
-    else:
-        st.info("No documents yet. Use Intake & Processing to submit one.")
+        st.markdown("#### Recent Documents")
+        if docs:
+            df = pd.DataFrame([_doc_summary_row(d) for d in docs])
+            st.dataframe(df.head(15), use_container_width=True, hide_index=True)
+        else:
+            st.info("No documents yet. Submit one below.")
 
 
 def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> None:
@@ -290,6 +289,7 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
                 )
                 processed = service.process_document(str(created["id"]), actor_id=actor_id, role=role)
                 st.session_state["last_processed_doc"] = processed
+                st.session_state["review_doc_target_id"] = str(processed.get("id") or "")
                 st.success(
                     f"Processed {processed['id']} | state={processed.get('state')} | "
                     f"doc_type={(processed.get('classification_output') or {}).get('doc_type')}"
@@ -315,13 +315,6 @@ def _render_ingestion(service: DocumentService, actor_id: str, role: str) -> Non
             st.session_state["review_doc_target_id"] = str(last_processed.get("id") or "")
             st.rerun()
 
-    st.markdown("### Queue")
-    docs = service.list_documents(limit=500)
-    if docs:
-        st.dataframe(pd.DataFrame([_doc_summary_row(d) for d in docs]), use_container_width=True, hide_index=True)
-    else:
-        st.info("No documents in queue.")
-
 
 def _render_structured_fields(service: DocumentService, actor_id: str, role: str) -> None:
     st.markdown("### 4) Structured Document Fields")
@@ -330,6 +323,7 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
         st.info("No processed documents yet. Upload and process a document first.")
         return
 
+    by_id = {str(d.get("id")): d for d in docs if d.get("id")}
     labels = {_build_doc_label(d): d for d in docs}
     label_list = list(labels.keys())
 
@@ -339,15 +333,31 @@ def _render_structured_fields(service: DocumentService, actor_id: str, role: str
         if isinstance(last_processed, dict):
             target_id = str(last_processed.get("id") or "")
 
-    default_idx = 0
-    if target_id:
-        for idx, lb in enumerate(label_list):
-            if lb.startswith(f"{target_id} |"):
-                default_idx = idx
-                break
+    lock_latest = st.checkbox(
+        "Lock to latest processed document",
+        value=True,
+        key="workspace_lock_latest_doc",
+    )
 
-    selected_label = st.selectbox("Selected Document", options=label_list, index=default_idx, key="workspace_doc_select")
-    selected_doc = labels[selected_label]
+    selected_doc: dict[str, Any]
+    if lock_latest and target_id and target_id in by_id:
+        selected_doc = by_id[target_id]
+        st.caption(f"Locked to: `{target_id}`")
+    else:
+        default_idx = 0
+        if target_id:
+            for idx, lb in enumerate(label_list):
+                if lb.startswith(f"{target_id} |"):
+                    default_idx = idx
+                    break
+        selected_label = st.selectbox(
+            "Selected Document",
+            options=label_list,
+            index=default_idx,
+            key="workspace_doc_select",
+        )
+        selected_doc = labels[selected_label]
+
     doc_id = str(selected_doc.get("id"))
     st.session_state["review_doc_target_id"] = doc_id
 
@@ -605,7 +615,9 @@ def main() -> None:
 
         user_name = str(user.get("name") or "User")
         user_email = str(user.get("email") or "")
-        st.write({"name": user_name, "email": user_email})
+        st.markdown(f"**Name:** {user_name}")
+        if user_email:
+            st.markdown(f"**Email:** {user_email}")
         if str(user.get("auth_mode") or "") == "local":
             st.caption("Mode: Local (offline/no Supabase auth)")
 
