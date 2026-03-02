@@ -430,6 +430,14 @@ def _render_system(service: DocumentService, auth_service: AuthService) -> None:
             "PERSISTENCE_NOTE": service.repo_error,
         }
     )
+    if st.button("Test Auth Backend Connectivity", use_container_width=True):
+        out = auth_service.connection_check()
+        if out.ok:
+            st.success(out.message)
+            if out.data:
+                st.json(out.data)
+        else:
+            st.error(out.message)
 
 
 def main() -> None:

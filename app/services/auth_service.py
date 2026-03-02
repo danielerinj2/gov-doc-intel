@@ -38,6 +38,32 @@ class AuthService:
             return bool(self.base_url and self.api_key and settings.supabase_url_valid())
         return False
 
+    def connection_check(self) -> AuthResponse:
+        if not self.configured():
+            return AuthResponse(False, f"{self.provider} is not configured.")
+        if self.provider == "appwrite":
+            try:
+                # Public health endpoint for Appwrite Cloud.
+                res = requests.get(f"{self.appwrite_endpoint}/health/version", timeout=12)
+                if res.status_code < 400:
+                    payload = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+                    return AuthResponse(True, "Appwrite reachable.", {"status_code": res.status_code, "payload": payload})
+                return AuthResponse(False, f"Appwrite health check failed: {res.status_code} {self._appwrite_error_message(res)}")
+            except Exception as exc:
+                return AuthResponse(False, f"Appwrite unreachable: {exc}")
+        try:
+            res = requests.get(
+                f"{self.base_url}/auth/v1/health",
+                headers=self._supabase_headers(),
+                timeout=12,
+            )
+            if res.status_code < 400:
+                payload = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+                return AuthResponse(True, "Supabase reachable.", {"status_code": res.status_code, "payload": payload})
+            return AuthResponse(False, f"Supabase health check failed: {res.status_code} {res.text[:200]}")
+        except Exception as exc:
+            return AuthResponse(False, f"Supabase unreachable: {exc}")
+
     # ──────────────────────────────────────────────────────────────────────
     # Supabase helpers
     # ──────────────────────────────────────────────────────────────────────
